@@ -30,7 +30,7 @@ python -m uvicorn app.main:app --reload
 ```
 
 FastAPI's built-in documentation is available at http://127.0.0.1:8000/docs.
-There are no application endpoints yet; requesting `/` returns 404.
+Registration is available at `POST /users/register`; requesting `/` returns 404.
 
 ## Structure
 
@@ -71,9 +71,8 @@ It yields a session and closes it even when request processing raises an error.
 There is no automatic commit; future write operations must explicitly commit.
 Closing a session rolls back any uncommitted transaction.
 
-The minimal app still starts without contacting PostgreSQL. Database settings
-are loaded when the database module or dependency is imported; at that point,
-`DATABASE_URL` must be configured.
+The app starts without contacting PostgreSQL, but `DATABASE_URL` must be
+configured because the registration route imports the database dependency.
 
 To verify the configured connection without accessing or changing tables, run
 this from the repository root in the activated virtual environment:
@@ -85,5 +84,63 @@ python -c "from sqlalchemy import text; from app.core.database import engine; co
 A successful connection prints `1`. Connection errors may contain connection
 details; do not publish their raw output or your `.env` file.
 
-This setup includes no domain models, repositories, services, application routes,
-authentication, or migrations. It does not create or modify database tables.
+## Registration (before SRP)
+
+`POST /users/register` accepts:
+
+```json
+{
+  "email": "member@example.com",
+  "username": "member",
+  "password": "Example-password-123!",
+  "first_name": "Example",
+  "last_name": "Member",
+  "phone": null,
+  "birth_date": null
+}
+```
+
+Email must be valid. Username and names must contain non-whitespace characters;
+surrounding whitespace is trimmed. Passwords must contain 8–128 characters and
+are not trimmed. Optional `birth_date` uses `YYYY-MM-DD`. Unknown fields are
+rejected, so callers cannot set status, IDs, timestamps, or a password hash.
+Uniqueness checks use exact equality against the existing database columns;
+email normalization is provided by Pydantic's `EmailStr`.
+
+Success returns `201` and the user's public fields, including database-generated
+ID, status, and timestamps. Neither the password nor its Argon2id hash is returned.
+Duplicate email or username returns `409`, including insert-time unique conflicts.
+Invalid requests return `422`; persistence failures return a generic `500` and
+roll back the transaction. Validation errors omit submitted values to avoid
+echoing passwords.
+
+For the academic BEFORE-SRP comparison, `RegistrationService` intentionally owns
+email/username uniqueness checks, password hashing, `User` construction,
+persistence coordination, and registration flow. The route handles HTTP,
+Pydantic handles request validation and response fields, and `UserRepository`
+handles queries and insertion. No specialized hashing or orchestration service
+has been extracted.
+
+Registration creates only a user. There is no ministry/role/function assignment,
+login, token generation, or database schema modification.
+
+## Tests
+
+```sh
+python -m pip install -r requirements-dev.txt
+python -m unittest discover -s tests -v
+```
+
+The default suite uses a mocked repository/session and exercises the real route,
+service, validation, and password hashing. PostgreSQL tests are opt-in and use
+the configured existing database. In PowerShell:
+
+```powershell
+$env:RUN_DATABASE_TESTS = "1"
+python -m unittest discover -s tests -v
+Remove-Item Env:RUN_DATABASE_TESTS
+```
+
+Database tests wrap requests in savepoints inside an outer transaction and roll
+back all test accounts afterward. Identity sequences can advance despite rollback.
+No tables are created, modified, or dropped by the test setup.
