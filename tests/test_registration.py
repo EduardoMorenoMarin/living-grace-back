@@ -38,9 +38,11 @@ def registration_input():
 class RegistrationTests(unittest.TestCase):
     def setUp(self):
         self.db = Mock(spec=Session)
-        self.repository_patch = patch("app.services.registration.UserRepository", autospec=True)
+        self.repository_patch = patch("app.dependencies.registration.UserRepository", autospec=True)
         self.repository = self.repository_patch.start().return_value
         self.addCleanup(self.repository_patch.stop)
+        # Keep real transaction behavior around the mocked database operations.
+        self.repository.transaction.side_effect = UserRepository(self.db).transaction
         self.repository.email_exists.return_value = False
         self.repository.username_exists.return_value = False
         self.created = []

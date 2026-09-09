@@ -84,7 +84,7 @@ python -c "from sqlalchemy import text; from app.core.database import engine; co
 A successful connection prints `1`. Connection errors may contain connection
 details; do not publish their raw output or your `.env` file.
 
-## Registration (before SRP)
+## Registration (after SRP)
 
 `POST /users/register` accepts:
 
@@ -114,12 +114,32 @@ Invalid requests return `422`; persistence failures return a generic `500` and
 roll back the transaction. Validation errors omit submitted values to avoid
 echoing passwords.
 
-For the academic BEFORE-SRP comparison, `RegistrationService` intentionally owns
-email/username uniqueness checks, password hashing, `User` construction,
-persistence coordination, and registration flow. The route handles HTTP,
-Pydantic handles request validation and response fields, and `UserRepository`
-handles queries and insertion. No specialized hashing or orchestration service
-has been extracted.
+Before SRP, `RegistrationService` owned uniqueness rules, password hashing,
+`User` construction, transaction handling, database-error translation, and the
+registration flow. Those responsibilities had independent reasons to change.
+
+After SRP, responsibilities are separated as follows:
+
+| Component | Responsibility / reason to change |
+| --- | --- |
+| `RegistrationService` | Sequence the registration use case and return its response |
+| `RegistrationValidator` | Enforce registration uniqueness rules |
+| `PasswordHasher` | Own the password hashing algorithm and configuration |
+| `UserFactory` | Map registration fields and a hash into the existing `User` model |
+| `UserRepository` | Own database queries, insertion, transactions, and persistence-error translation |
+| `get_registration_service` | Assemble collaborators using the request's database session |
+| Registration route | Map HTTP requests, responses, and errors |
+| Pydantic schemas | Define request validation and the safe response contract |
+
+The service receives concrete collaborators through constructor injection; no
+interfaces or generic service framework are needed. The repository transaction
+wraps the entire flow, including uniqueness checks, and commits only after the
+safe response has been constructed. Existing commit/rollback ordering, error
+messages, database defaults, and API behavior are preserved.
+
+All original test cases and assertions are retained. Only the unit-test setup
+changes to patch the repository at its new dependency-wiring location and use
+its real transaction handling with the mocked session.
 
 Registration creates only a user. There is no ministry/role/function assignment,
 login, token generation, or database schema modification.
