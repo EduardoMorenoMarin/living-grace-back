@@ -3,3 +3,7 @@ uvicorn
 SQLAlchemy
 psycopg[binary]
 pydantic
+pydantic-settings
+email-validator
+pwdlib[argon2]
+pyjwt
