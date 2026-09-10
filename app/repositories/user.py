@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import RegistrationConflict, RegistrationPersistenceError
 from app.models.user import User
 
+from sqlalchemy import or_, select
 
 class UserRepository:
     """Own user database access and transaction handling."""
@@ -44,3 +45,9 @@ class UserRepository:
         except SQLAlchemyError:
             self.db.rollback()
             raise RegistrationPersistenceError("Unable to register user.") from None
+
+    def get_by_identifier(self, identifier: str) -> User | None:
+        """Fetch a user by email or username, whichever matches."""
+        return self.db.scalar(
+            select(User).where(or_(User.email == identifier, User.username == identifier))
+        )
