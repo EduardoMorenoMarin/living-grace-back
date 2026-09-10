@@ -1,7 +1,7 @@
-"""Review tests: production login code is intentionally left unchanged.
+"""Behavioral contract for login, including production router accessibility.
 
-The missing production router is recorded as an expected failure. Handler tests
-mount the existing router in an isolated app, not in the production application.
+Handler tests mount the router in an isolated app; a separate test verifies the
+endpoint through the production application.
 PostgreSQL tests opt in through RUN_DATABASE_TESTS=1 and roll back their fixtures.
 """
 
@@ -167,9 +167,8 @@ class LoginTests(unittest.TestCase):
         self.assertNotIn("private database details", response.text)
         self.assert_session_released_without_writes()
 
-    @unittest.expectedFailure
     def test_production_application_exposes_login(self):
-        """Known defect: main.py does not include the auth router (actual HTTP 404)."""
+        """The production application exposes the working login endpoint."""
         with TestClient(app) as client:
             response = client.post("/auth/login", json={
                 "identifier": self.account["email"], "password": self.account["password"],
