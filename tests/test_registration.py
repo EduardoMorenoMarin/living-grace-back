@@ -138,6 +138,40 @@ class RegistrationTests(unittest.TestCase):
         self.assertNotIn("private", response.text)
         self.db.rollback.assert_called_once()
 
+    def test_persistence_exception_is_logged_only_on_server(self):
+        self.db.commit.side_effect = SQLAlchemyError("simulated database failure")
+        with self.assertLogs("app.repositories.user", level="ERROR") as logs:
+            response = self.client.post("/users/register", json=self.payload)
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json(), {"detail": "Unable to register user."})
+        output = "\n".join(logs.output)
+        self.assertIn("simulated database failure", output)
+        self.assertIn("SQLAlchemyError", output)
+        self.assertIn("self.db.commit()", output)
+        self.db.rollback.assert_called_once()
+
+    def test_integrity_log_omits_parameters_and_failing_row(self):
+        original = SimpleNamespace(
+            sqlstate="23502",
+            diag=SimpleNamespace(
+                message_primary='null value in column "first_name" violates not-null constraint',
+                message_detail="Failing row contains private-row-hash",
+            ),
+        )
+        self.repository.add.side_effect = IntegrityError(
+            "private SQL", {"password_hash": "private-parameter-hash"}, original
+        )
+        with self.assertLogs("app.repositories.user", level="ERROR") as logs:
+            response = self.client.post("/users/register", json=self.payload)
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json(), {"detail": "Unable to register user."})
+        output = "\n".join(logs.output)
+        self.assertIn("23502", output)
+        self.assertIn("not-null constraint", output)
+        self.assertNotIn("private-parameter-hash", output)
+        self.assertNotIn("private-row-hash", output)
+        self.assertNotIn("private SQL", output)
+
     def test_request_validation_does_not_echo_secrets(self):
         for field, value in (
             ("email", "invalid"), ("username", "   "), ("first_name", ""),

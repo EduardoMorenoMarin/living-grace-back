@@ -1,14 +1,42 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
+import logging
+import traceback
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import RegistrationConflict, RegistrationPersistenceError
+from app.core.database import engine
 from app.models.user import User
 
 from sqlalchemy import or_, select
+
+logger = logging.getLogger(__name__)
+
+
+def _log_persistence_error(exc: SQLAlchemyError) -> None:
+    original = getattr(exc, "orig", exc)
+    diagnostic = getattr(original, "diag", None)
+    # PostgreSQL DETAIL can contain the entire failing row, including its hash.
+    # Do not stringify the SQLAlchemy wrapper: it can include bound parameters.
+    message = getattr(diagnostic, "message_primary", None)
+    if not message:
+        message = str(original).splitlines()[0] if str(original) else type(original).__name__
+    # Connection errors may contain a connection URL or password.
+    for secret in (engine.url.render_as_string(hide_password=False), engine.url.password):
+        if secret:
+            message = message.replace(secret, "[redacted]")
+    logger.error(
+        "Registration persistence failed: %s / %s; SQLSTATE=%s; %s\n%s",
+        type(exc).__name__,
+        type(original).__name__,
+        getattr(original, "sqlstate", None),
+        message,
+        "".join(traceback.format_tb(exc.__traceback__)),
+    )
+
 
 class UserRepository:
     """Own user database access and transaction handling."""
@@ -37,12 +65,14 @@ class UserRepository:
             self.db.rollback()
             raise
         except IntegrityError as exc:
+            _log_persistence_error(exc)
             self.db.rollback()
             # A concurrent request can insert after the uniqueness checks.
             if getattr(exc.orig, "sqlstate", None) == "23505":
                 raise RegistrationConflict("Email or username is already registered.") from None
             raise RegistrationPersistenceError("Unable to register user.") from None
-        except SQLAlchemyError:
+        except SQLAlchemyError as exc:
+            _log_persistence_error(exc)
             self.db.rollback()
             raise RegistrationPersistenceError("Unable to register user.") from None
 
