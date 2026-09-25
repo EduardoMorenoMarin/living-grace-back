@@ -2,7 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.core.exceptions import RegistrationConflict, RegistrationPersistenceError
+from app.core.exceptions import RegistrationConflict, RegistrationPersistenceError, RegistrationValidationError
 from app.dependencies.registration import get_registration_service
 from app.schemas.user import UserCreate, UserResponse
 from app.services.registration import RegistrationService
@@ -20,6 +20,8 @@ def register_user(
         return service.register(data)
     except RegistrationConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
+    except RegistrationValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
     except RegistrationPersistenceError:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

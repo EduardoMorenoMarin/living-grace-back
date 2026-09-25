@@ -1,5 +1,5 @@
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.enums import MinistryStatus
 from app.models.ministry import Ministry
@@ -12,7 +12,7 @@ class MinistryRepository:
     def list_active(self) -> list[Ministry]:
         return list(
             self.db.scalars(
-                select(Ministry).where(
+                select(Ministry).options(selectinload(Ministry.functions)).where(
                     Ministry.status == MinistryStatus.ACTIVE,
                     Ministry.deleted_at.is_(None),
                 )
