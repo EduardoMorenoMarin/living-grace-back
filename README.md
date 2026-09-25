@@ -171,8 +171,10 @@ No tables are created, modified, or dropped by the test setup.
 
 ## Registration BEFORE OCP
 
-Registration uses existing ministry/function IDs. No new columns, migration,
-frontend, or AFTER OCP implementation are included.
+The BEFORE baseline on `feat/register/before-ocp` uses existing ministry/function
+IDs without new columns, a migration, or a frontend. The shared API below also
+applies to AFTER; see [Registration AFTER OCP](#registration-after-ocp) for the
+refactor on this branch.
 
 ### Verified database schema
 
@@ -263,17 +265,18 @@ foreign-key, persistence, or commit failure rolls back already-flushed users,
 memberships, and assignments. Existing 409 conflicts and sanitized 500 errors
 remain supported.
 
-`MembershipValidator` uses direct conditional checks for availability and function
-ownership. There are no supported ministry-name-specific rules remaining, so no
+In the BEFORE baseline, `MembershipValidator` uses direct conditional checks for
+availability and function ownership. There are no supported ministry-name-specific rules remaining, so no
 artificial ministry branches were added. The former text-field rules, provider
 registry, auto-discovery, and OCP abstractions are removed. Validation, persistence,
 user mapping, and orchestration remain separate (SRP). `UserMapper` is the existing
 plain personal-field mapper, previously named `UserFactory`, without an extensible
 factory mechanism.
 
-Any later real ministry-specific rule should use straightforward conditions in
-this BEFORE branch. A future AFTER refactor must preserve the same API, validations,
-relational persistence, role restrictions, and transaction behavior.
+A new ministry-specific requirement in BEFORE would require editing that validator.
+The AFTER implementation below preserves the same API, validations, relational
+persistence, role restrictions, and transaction behavior while adding an extension
+point for additional requirements.
 
 ### Relevant files and verification
 
@@ -289,3 +292,98 @@ includes actual foreign-key failure during assignment, late persistence failure,
 commit failure, retry after rollback, and rejected role/extra-field submissions.
 PostgreSQL tests use the existing schema and roll back fixtures using savepoints
 within an outer transaction; identity sequences may advance despite rollback.
+
+
+## Registration AFTER OCP
+
+This branch (`feat/register/after-ocp`) makes additional membership validation
+extensible without changing `RegistrationService` or any database mappings.
+
+### Analysis and scope
+
+The BEFORE code has no ministry-name dispatch or ministry-specific registration
+requirements. An `if` statement is not inherently an OCP violation. The availability,
+function ownership, duplicate-selection, role rejection, and uniqueness checks are
+mandatory shared invariants. Replacing each with a Strategy would add unnecessary
+complexity and could make those invariants accidentally optional.
+
+The actual extension limitation is in `MembershipValidator`: another membership
+requirement previously required editing its validation method. AFTER adds a small
+rule interface and an injected sequence for these variable requirements. Existing
+invariant checks remain mandatory and keep their original order and error messages.
+The catalog, HTTP schemas/endpoints, password handling, persistence services, and
+transaction boundaries need no refactoring for this extension point.
+
+### Design
+
+| Component | Responsibility |
+| --- | --- |
+| `MembershipRule` in `app/services/membership_rules.py` | Protocol with `validate(ministry, functions)` for one additional requirement |
+| `MembershipValidator` | Load and validate references, then invoke each injected rule for each membership |
+| `get_membership_rules()` in `app/dependencies/registration.py` | Composition point for optional rule implementations; returns an empty tuple in production |
+| `RegistrationService` | Existing orchestration, unchanged and unaware of concrete rules |
+
+Rules receive the existing ministry and selected function objects after availability
+and ownership checks pass. They inspect these objects without mutating them, writing
+to the database, or committing. To reject a selection, a rule raises
+`RegistrationValidationError` with a user-safe message. All rules run in injection
+order, stopping at the first rejection. The existing transaction catches this error,
+rolls back, and the endpoint returns 422. Rule validation still precedes password
+hashing and all registration inserts.
+
+To add a real requirement, implement `MembershipRule` and supply the implementation
+through `get_membership_rules()` (or the application's dependency configuration).
+Only composition wiring changes; the core service, validator loop, and existing
+rules remain unchanged. There is no provider registry, dynamic discovery, factory,
+new schema field, or ministry switch in the workflow. The extension is deliberately
+for additive validation, not alternative persistence or registration workflows.
+
+### Test-only example
+
+`RequireFunctionForMinistry` in `tests/test_membership_rules.py` models a hypothetical
+requirement that one selected ministry must have at least one selected function:
+
+```python
+class RequireFunctionForMinistry:
+    def __init__(self, ministry_id):
+        self.ministry_id = ministry_id
+
+    def validate(self, ministry, functions):
+        if ministry.id == self.ministry_id and not functions:
+            raise RegistrationValidationError(
+                "Select at least one function for this ministry."
+            )
+```
+
+Tests inject it for their Alabanza fixture through FastAPI's dependency override:
+
+```python
+app.dependency_overrides[get_membership_rules] = lambda: (
+    RequireFunctionForMinistry(alabanza_id),
+)
+```
+
+The fixture restores the override after each test. This rule is not enabled in
+production: omitting functions remains valid exactly as in BEFORE. The example
+adds no columns or real business requirement. Its local conditional belongs to the
+new rule implementation; adding it requires no edits to `RegistrationService` or
+`MembershipValidator`.
+
+### Behavior and verification
+
+Existing registration contract tests are retained unchanged. The additional rule
+contract runs using the same disposable SQLite and rollback-protected PostgreSQL
+fixtures. It verifies acceptance/rejection for the selected ministry, no effect on
+other ministries, no bypass of mandatory function validation, and no partial user
+when a later membership fails the new rule. Unit tests verify rule order, early
+exit, validated inputs, and no redundant database lookups.
+
+User creation, optional memberships/functions, `PENDING` membership status, and
+public role rejection are preserved. The existing foreign-key, persistence-failure,
+and commit-failure rollback tests still apply. No migration is required. Live
+function assignments retain the verified `ministry_member_functions` mapping noted
+in the schema audit above.
+
+The OpenAPI schema is identical before and after the refactor. Run the suite using
+the commands in the Tests section; PostgreSQL coverage remains opt-in and uses
+rollback-protected fixtures without schema changes.

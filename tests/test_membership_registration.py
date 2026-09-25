@@ -37,6 +37,7 @@ from app.models.ministry_member_function import MinistryMemberFunction
 from app.models.user import User
 from app.repositories.membership import MembershipRepository
 from app.services.password_hasher import PasswordHasher
+from test_membership_rules import MembershipRuleExtensionContract
 
 
 class MembershipRegistrationContract:
@@ -287,7 +288,7 @@ class MembershipRegistrationContract:
         self.assertEqual(response.headers["access-control-allow-origin"], settings.FRONTEND_ORIGIN)
 
 
-class SQLiteMembershipRegistrationTests(MembershipRegistrationContract, unittest.TestCase):
+class SQLiteMembershipRegistrationTests(MembershipRuleExtensionContract, MembershipRegistrationContract, unittest.TestCase):
     def setUp(self):
         engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
         self.addCleanup(engine.dispose)
@@ -310,7 +311,7 @@ class SQLiteMembershipRegistrationTests(MembershipRegistrationContract, unittest
 
 
 @unittest.skipUnless(os.environ.get("RUN_DATABASE_TESTS") == "1", "opt-in PostgreSQL tests")
-class PostgreSQLMembershipRegistrationTests(MembershipRegistrationContract, unittest.TestCase):
+class PostgreSQLMembershipRegistrationTests(MembershipRuleExtensionContract, MembershipRegistrationContract, unittest.TestCase):
     def setUp(self):
         connection = postgres_engine.connect()
         self.addCleanup(connection.close)
