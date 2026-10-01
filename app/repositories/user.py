@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import RegistrationConflict, RegistrationPersistenceError
+from app.core.exceptions import RegistrationConflict, RegistrationPersistenceError, RegistrationValidationError
 from app.core.database import engine
 from app.models.user import User
 
@@ -61,7 +61,7 @@ class UserRepository:
         try:
             yield
             self.db.commit()
-        except RegistrationConflict:
+        except (RegistrationConflict, RegistrationValidationError):
             self.db.rollback()
             raise
         except IntegrityError as exc:

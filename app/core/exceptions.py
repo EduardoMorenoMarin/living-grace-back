@@ -4,3 +4,7 @@ class RegistrationConflict(Exception):
 
 class RegistrationPersistenceError(Exception):
     pass
+
+
+class RegistrationValidationError(Exception):
+    pass
