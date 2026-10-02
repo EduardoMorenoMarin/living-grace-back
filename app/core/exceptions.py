@@ -16,7 +16,3 @@ class MinistryNotFound(Exception):
 
 class RehearsalPersistenceError(Exception):
     pass
-
-
-class RestrictedRehearsalError(Exception):
-    pass

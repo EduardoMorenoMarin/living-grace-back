@@ -1,6 +1,6 @@
 # Living Grace Backend
 
-## Rehearsal creation BEFORE LSP
+## Rehearsal creation AFTER LSP
 
 Only `POST /rehearsals` is added. The existing ORM schema uses `name`,
 `start_at`, `end_at`, and `tolerance_minutes`; there are no `title`,
@@ -57,25 +57,30 @@ failures a sanitized 500. No existing ministry permission/membership authorizati
 check was found; registration selection validation is not an authorization policy.
 Consequently, any authenticated user can create for an existing ministry.
 
-The intentional LSP violation lives in `app/services/rehearsal_creation.py`:
+The LSP refactor lives in `app/services/rehearsal_creation.py`:
 
-- `RehearsalCreator` is the concrete base implementation and production default.
+- `RehearsalCreator` is the concrete base implementation.
   Its contract accepts schema-valid data with an optional description for an
   existing ministry and trusted user, returning the created rehearsal when
   storage succeeds.
-- `RestrictedRehearsalCreator(RehearsalCreator)` overrides `create` and requires
-  a nonblank description. It rejects otherwise valid data before persistence.
-- A caller using the base type can omit description and expect success. Replacing
-  its creator with the subtype causes that same call to fail. The subtype
-  strengthens the input precondition, violating Liskov substitution. This is an
-  artificial teaching restriction, not a ministry permission rule. It is
-  intentionally preserved, not refactored into an LSP-compliant design.
+- BEFORE: `RestrictedRehearsalCreator` required a nonblank description, rejecting
+  valid base inputs. It strengthened a precondition and violated substitution.
+- AFTER: `LoggingRehearsalCreator(RehearsalCreator)` delegates to the base and
+  logs the created ID after a successful commit. It accepts exactly the same
+  inputs, preserves the response and persistence errors, and does not mutate
+  the request. Logging handler failures do not invalidate a committed creation.
+  The artificial description restriction and its exception are removed.
+- Production wiring supplies `LoggingRehearsalCreator` through the base-typed
+  dependency. The route needs no subtype checks or special error handling.
+  Omitting description, sending null, or sending blank text remains valid with
+  either implementation. No fallback description is invented.
 
-`test_lsp_substitution_rejects_optional_description` demonstrates the problem
-through the production route: 201 with the base, 422 for the same input after
-injecting the subtype, and 201 with the subtype when a description is supplied.
-Other tests cover actual persistence, authenticated ownership, invalid ministries,
-request validation, token failures, foreign-key failure, and commit rollback/retry.
+`test_lsp_contract_accepts_optional_description` verifies 201 and unchanged
+description values for omitted, null, empty, whitespace, and populated descriptions.
+The entire shared endpoint contract runs with both the base and production subtype:
+actual persistence, authenticated ownership, invalid ministries, request validation,
+token failures, foreign-key failure, and commit rollback/retry. Additional tests
+verify that only successful creation is logged and logging failures preserve 201.
 
 ```powershell
 .venv\Scripts\python.exe -m unittest discover -s tests -p test_rehearsals.py -v

@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 from app.dependencies.database import get_db
 from app.repositories.membership import MembershipRepository
 from app.repositories.rehearsal import RehearsalRepository
-from app.services.rehearsal_creation import RehearsalCreator
+from app.services.rehearsal_creation import LoggingRehearsalCreator, RehearsalCreator
 
 
 def get_rehearsal_creator(db: Annotated[Session, Depends(get_db)]) -> RehearsalCreator:
-    return RehearsalCreator(RehearsalRepository(db), MembershipRepository(db))
+    return LoggingRehearsalCreator(RehearsalRepository(db), MembershipRepository(db))

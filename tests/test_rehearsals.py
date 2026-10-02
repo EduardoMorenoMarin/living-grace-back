@@ -1,4 +1,4 @@
-"""BEFORE-LSP contract: real persistence, JWT authentication, and substitution."""
+"""AFTER-LSP: the same persistence and HTTP contract applies to both creators."""
 
 import os
 import secrets
@@ -30,11 +30,14 @@ from app.models.rehearsal import Rehearsal
 from app.models.user import User
 from app.repositories.membership import MembershipRepository
 from app.repositories.rehearsal import RehearsalRepository
-from app.services.rehearsal_creation import RehearsalCreator, RestrictedRehearsalCreator
+from app.services.rehearsal_creation import LoggingRehearsalCreator, RehearsalCreator
 from app.services.token import TokenService
 
 
 class RehearsalContract:
+    # None exercises production wiring; base subclasses override only the creator.
+    creator_type = None
+
     def prepare(self):
         stack = ExitStack()
         self.addCleanup(stack.close)
@@ -53,6 +56,11 @@ class RehearsalContract:
                 yield db
 
         stack.enter_context(patch.dict(app.dependency_overrides, {get_db: override_db}))
+        if self.creator_type is not None:
+            def creator(db: Session = Depends(get_db)) -> RehearsalCreator:
+                return self.creator_type(RehearsalRepository(db), MembershipRepository(db))
+
+            stack.enter_context(patch.dict(app.dependency_overrides, {get_rehearsal_creator: creator}))
         self.client = stack.enter_context(TestClient(app))
         self.headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(self.user_id)}"}
         self.payload = {
@@ -144,21 +152,37 @@ class RehearsalContract:
         self.assertEqual(response.json(), {"detail": "Unable to create rehearsal."})
         self.assertEqual(self.rows(), [])
 
-    def test_lsp_substitution_rejects_optional_description(self):
-        # The same client and valid request succeed with the declared base type.
+    def test_lsp_contract_accepts_optional_description(self):
         self.assertEqual(self.post().status_code, 201)
-
-        def restricted(db: Session = Depends(get_db)) -> RehearsalCreator:
-            return RestrictedRehearsalCreator(RehearsalRepository(db), MembershipRepository(db))
-
-        with patch.dict(app.dependency_overrides, {get_rehearsal_creator: restricted}):
-            for description in (None, "", "   "):
+        for description in (None, "", "   ", "Weekly rehearsal"):
+            with self.subTest(description=description):
                 response = self.post(description=description)
-                self.assertEqual(response.status_code, 422)
-                self.assertEqual(response.json(), {"detail": "Restricted creator requires a description."})
-            self.assertEqual(len(self.rows()), 1)
-            self.assertEqual(self.post(description="Weekly rehearsal").status_code, 201)
-        self.assertEqual(len(self.rows()), 2)
+                self.assertEqual(response.status_code, 201, response.text)
+                self.assertEqual(response.json()["description"], description)
+        self.assertCountEqual([row.description for row in self.rows()],
+                              [None, None, "", "   ", "Weekly rehearsal"])
+
+    def test_logging_failure_does_not_change_creation_result(self):
+        with patch("app.services.rehearsal_creation.logger.info", side_effect=RuntimeError("handler failure")):
+            response = self.post()
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_subtype_logs_only_successful_creation(self):
+        with self.session_factory() as db:
+            self.assertIsInstance(get_rehearsal_creator(db), LoggingRehearsalCreator)
+        with patch("app.services.rehearsal_creation.logger.info") as log:
+            response = self.post()
+            self.assertEqual(response.status_code, 201)
+            if self.creator_type is None:
+                log.assert_called_once_with("Created rehearsal %s", response.json()["id"])
+            else:
+                log.assert_not_called()
+            log.reset_mock()
+            with patch.object(Session, "commit", side_effect=SQLAlchemyError("commit failure")):
+                self.assertEqual(self.post().status_code, 500)
+            log.assert_not_called()
+        self.assertEqual(len(self.rows()), 1)
 
 
 class SQLiteRehearsalTests(RehearsalContract, unittest.TestCase):
@@ -190,6 +214,14 @@ class PostgreSQLRehearsalTests(RehearsalContract, unittest.TestCase):
         self.addCleanup(transaction.rollback)
         self.session_factory = lambda: Session(bind=connection, autoflush=False, join_transaction_mode="create_savepoint")
         self.prepare()
+
+
+class SQLiteBaseRehearsalTests(SQLiteRehearsalTests):
+    creator_type = RehearsalCreator
+
+
+class PostgreSQLBaseRehearsalTests(PostgreSQLRehearsalTests):
+    creator_type = RehearsalCreator
 
 
 if __name__ == "__main__":

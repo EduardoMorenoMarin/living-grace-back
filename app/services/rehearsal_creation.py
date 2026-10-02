@@ -1,8 +1,13 @@
-from app.core.exceptions import MinistryNotFound, RestrictedRehearsalError
+import logging
+
+from app.core.exceptions import MinistryNotFound
 from app.models.rehearsal import Rehearsal
 from app.repositories.membership import MembershipRepository
 from app.repositories.rehearsal import RehearsalRepository
 from app.schemas.rehearsal import RehearsalCreate, RehearsalResponse
+
+
+logger = logging.getLogger(__name__)
 
 
 class RehearsalCreator:
@@ -27,11 +32,14 @@ class RehearsalCreator:
         return result
 
 
-class RestrictedRehearsalCreator(RehearsalCreator):
-    """Intentional BEFORE-LSP violation: strengthen the description precondition."""
+class LoggingRehearsalCreator(RehearsalCreator):
+    """Add best-effort logging while preserving the base creation contract."""
 
     def create(self, data: RehearsalCreate, user_id: int) -> RehearsalResponse:
-        # Educational restriction, not a real ministry authorization policy.
-        if data.description is None or not data.description.strip():
-            raise RestrictedRehearsalError("Restricted creator requires a description.")
-        return super().create(data, user_id)
+        result = super().create(data, user_id)
+        try:
+            logger.info("Created rehearsal %s", result.id)
+        except Exception:
+            # A logging handler must not turn a committed creation into a failure.
+            pass
+        return result
