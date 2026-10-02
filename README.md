@@ -1,5 +1,94 @@
 # Living Grace Backend
 
+## Rehearsal creation BEFORE LSP
+
+Only `POST /rehearsals` is added. The existing ORM schema uses `name`,
+`start_at`, `end_at`, and `tolerance_minutes`; there are no `title`,
+`rehearsal_date`, or `location` columns. No database schema changes are needed.
+
+Log in using `POST /auth/login` with `identifier` and `password`, then send the
+returned access token as `Authorization: Bearer <access_token>`. In `/docs`, use
+Authorize to enter that token and execute `POST /rehearsals` with an existing
+ministry ID:
+
+```json
+{
+  "ministry_id": 1,
+  "name": "Worship Team Rehearsal",
+  "description": "Weekly rehearsal for Sunday service",
+  "start_at": "2026-10-03T19:00:00-05:00",
+  "end_at": "2026-10-03T21:00:00-05:00",
+  "tolerance_minutes": 0
+}
+```
+
+Example 201 response (IDs/timestamps are illustrative; PostgreSQL may normalize
+the timezone offset):
+
+```json
+{
+  "id": 1,
+  "ministry_id": 1,
+  "created_by": 1,
+  "name": "Worship Team Rehearsal",
+  "description": "Weekly rehearsal for Sunday service",
+  "start_at": "2026-10-04T00:00:00Z",
+  "end_at": "2026-10-04T02:00:00Z",
+  "tolerance_minutes": 0,
+  "created_at": "2026-10-01T15:00:00Z",
+  "updated_at": "2026-10-01T15:00:00Z"
+}
+```
+
+The authentication dependency verifies the existing JWT signature, algorithm,
+expiry and subject, then loads the user. The schema rejects unknown fields,
+including client-supplied `id`, `created_by`, `created_at`, and `updated_at`.
+Names must be nonblank, dates must include a timezone, `end_at > start_at`, and
+tolerance must be a nonnegative PostgreSQL INTEGER (default 0). Description is
+optional. Ministry IDs use the existing strict positive BIGINT convention.
+
+The route passes the authenticated user's ID separately to `RehearsalCreator`.
+The creator reuses `MembershipRepository.get_ministry` to check existence, builds
+the existing ORM entity, and inserts through `RehearsalRepository`. The repository
+flushes/refreshes database-generated fields, the service builds the response, and
+the transaction commits before returning 201. Failures roll back. Authentication
+failures return 401, missing ministries 404, invalid requests 422, and database
+failures a sanitized 500. No existing ministry permission/membership authorization
+check was found; registration selection validation is not an authorization policy.
+Consequently, any authenticated user can create for an existing ministry.
+
+The intentional LSP violation lives in `app/services/rehearsal_creation.py`:
+
+- `RehearsalCreator` is the concrete base implementation and production default.
+  Its contract accepts schema-valid data with an optional description for an
+  existing ministry and trusted user, returning the created rehearsal when
+  storage succeeds.
+- `RestrictedRehearsalCreator(RehearsalCreator)` overrides `create` and requires
+  a nonblank description. It rejects otherwise valid data before persistence.
+- A caller using the base type can omit description and expect success. Replacing
+  its creator with the subtype causes that same call to fail. The subtype
+  strengthens the input precondition, violating Liskov substitution. This is an
+  artificial teaching restriction, not a ministry permission rule. It is
+  intentionally preserved, not refactored into an LSP-compliant design.
+
+`test_lsp_substitution_rejects_optional_description` demonstrates the problem
+through the production route: 201 with the base, 422 for the same input after
+injecting the subtype, and 201 with the subtype when a description is supplied.
+Other tests cover actual persistence, authenticated ownership, invalid ministries,
+request validation, token failures, foreign-key failure, and commit rollback/retry.
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -p test_rehearsals.py -v
+.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+By default rehearsal tests use disposable SQLite with foreign keys enabled.
+To run the same contract against configured PostgreSQL, set
+`$env:RUN_DATABASE_TESTS = "1"` before the focused command and remove it afterward
+with `Remove-Item Env:RUN_DATABASE_TESTS`. PostgreSQL fixtures use outer transaction
+rollback and savepoints without creating/changing tables; identity sequences may
+advance. No attendance behavior or other rehearsal endpoints are implemented.
+
 Initial Python and FastAPI setup for a university church ministry management project.
 
 ## Run locally
