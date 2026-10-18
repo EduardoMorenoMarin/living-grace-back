@@ -10,6 +10,7 @@ from app.services.registration import RegistrationService
 from app.services.registration_validator import RegistrationValidator
 from app.services.user_mapper import UserMapper
 from app.repositories.membership import MembershipRepository
+from app.repositories.registration_roles import RegistrationRoleRepository
 from app.services.membership_registration import MembershipRegistrationService
 from app.services.membership_validator import MembershipValidator
 from app.services.membership_rules import MembershipRule
@@ -32,5 +33,5 @@ def get_registration_service(
         password_hasher=PasswordHasher(),
         user_mapper=UserMapper(),
         membership_validator=MembershipValidator(memberships, membership_rules),
-        membership_registration=MembershipRegistrationService(memberships),
+        membership_registration=MembershipRegistrationService(memberships, RegistrationRoleRepository(db)),
     )

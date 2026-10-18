@@ -340,8 +340,13 @@ array containing objects such as:
 
 Requests without memberships remain supported and return `"memberships": []`.
 Function selection is optional, consistent with existing relationship constraints.
-Roles cannot be selected or assigned through public registration; no default role
-is invented. IDs, statuses, timestamps, rehearsals, and attendance are not editable
+Roles cannot be selected by clients. Registration resolves the active, non-deleted
+GLOBAL USER role by name and assigns it to every new membership in the same
+transaction. Missing default roles or failed assignments roll back registration.
+Assignment IDs are explicit random positive BIGINTs because the verified
+`ministry_member_roles.id` column has no database default. Primary-key collisions
+fail registration safely; no sequence or schema change is required.
+IDs, statuses, timestamps, rehearsals, and attendance are not editable
 registration fields.
 
 Validation rejects duplicate selections, malformed/nonpositive/out-of-range IDs,

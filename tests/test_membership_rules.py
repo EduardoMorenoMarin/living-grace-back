@@ -143,7 +143,7 @@ class MembershipRuleExtensionContract:
             stored = db.get(MinistryMember, membership["id"])
             self.assertEqual({item.function_id for item in stored.ministry_member_functions},
                              set(membership["function_ids"]))
-            self.assertEqual(stored.ministry_member_roles, [])
+            self.assertEqual([assignment.role_id for assignment in stored.ministry_member_roles], [self.user_role_id])
 
     def test_example_rule_does_not_change_other_ministries(self):
         self.enable_example_rule()

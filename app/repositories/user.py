@@ -61,7 +61,7 @@ class UserRepository:
         try:
             yield
             self.db.commit()
-        except (RegistrationConflict, RegistrationValidationError):
+        except (RegistrationConflict, RegistrationValidationError, RegistrationPersistenceError):
             self.db.rollback()
             raise
         except IntegrityError as exc:
