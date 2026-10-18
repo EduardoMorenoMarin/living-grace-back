@@ -16,3 +16,11 @@ class MinistryNotFound(Exception):
 
 class RehearsalPersistenceError(Exception):
     pass
+
+
+class ProfilePersistenceError(Exception):
+    pass
+
+
+class ProfileUserUnavailable(Exception):
+    pass
