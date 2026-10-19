@@ -26,6 +26,14 @@ class RehearsalValidationError(Exception):
     pass
 
 
+class RehearsalNotFound(Exception):
+    pass
+
+
+class RehearsalReadError(Exception):
+    pass
+
+
 class ProfilePersistenceError(Exception):
     pass
 

@@ -16,8 +16,16 @@ class AuthorizationRepository:
         self.db = db
 
     def has_global_role(self, user_id: int, role_name: str) -> bool:
-        assignment = (
-            select(MinistryMemberRole.id)
+        assignment = self._global_roles(user_id).where(Role.name == role_name)
+        return bool(self.db.scalar(select(assignment.exists())))
+
+    def get_global_roles(self, user_id: int) -> set[str]:
+        return set(self.db.scalars(self._global_roles(user_id).distinct()))
+
+    def _global_roles(self, user_id: int):
+        return (
+            select(Role.name)
+            .select_from(MinistryMemberRole)
             .join(MinistryMember, MinistryMember.id == MinistryMemberRole.ministry_member_id)
             .join(User, User.id == MinistryMember.user_id)
             .join(Ministry, Ministry.id == MinistryMember.ministry_id)
@@ -28,8 +36,7 @@ class AuthorizationRepository:
                 MinistryMember.deleted_at.is_(None),
                 Ministry.status == MinistryStatus.ACTIVE, Ministry.deleted_at.is_(None),
                 MinistryMemberRole.revoked_at.is_(None),
-                Role.name == role_name, Role.scope == RoleScope.GLOBAL,
+                Role.scope == RoleScope.GLOBAL,
                 Role.status == RoleStatus.ACTIVE, Role.deleted_at.is_(None),
             )
         )
-        return bool(self.db.scalar(select(assignment.exists())))
