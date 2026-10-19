@@ -13,9 +13,32 @@ from app.dependencies.rehearsals import get_rehearsal_creator
 from app.models.user import User
 from app.schemas.rehearsal import RehearsalCreate, RehearsalResponse
 from app.services.rehearsal_creation import RehearsalCreator
+from app.core.exceptions import RehearsalAttendanceConflict
+from app.dependencies.rehearsal_update import get_rehearsal_update_service
+from app.schemas.rehearsal_update import RehearsalUpdate
+from app.services.rehearsal_update import RehearsalUpdateService
 
 
 router = APIRouter(prefix="/rehearsals", tags=["rehearsals"])
+
+
+@router.patch("/{rehearsal_id}", response_model=AdminRehearsalDetail)
+def update_rehearsal(
+    rehearsal_id: Annotated[int, Path(gt=0, le=9223372036854775807)],
+    data: RehearsalUpdate,
+    user: Annotated[User, Depends(require_global_admin)],
+    service: Annotated[RehearsalUpdateService, Depends(get_rehearsal_update_service)],
+) -> AdminRehearsalDetail:
+    try:
+        return service.update(rehearsal_id, user.id, data)
+    except RehearsalNotFound:
+        raise HTTPException(status_code=404, detail="Rehearsal does not exist.") from None
+    except RehearsalValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except RehearsalAttendanceConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except (RehearsalPersistenceError, RehearsalReadError):
+        raise HTTPException(status_code=500, detail="Unable to update rehearsal.") from None
 
 
 @router.get("", response_model=AdminRehearsalPage | RehearsalPage)

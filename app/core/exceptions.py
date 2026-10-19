@@ -26,6 +26,10 @@ class RehearsalValidationError(Exception):
     pass
 
 
+class RehearsalAttendanceConflict(Exception):
+    pass
+
+
 class RehearsalNotFound(Exception):
     pass
 

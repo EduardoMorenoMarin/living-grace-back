@@ -2,7 +2,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 import secrets
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -45,6 +45,19 @@ class RehearsalRepository:
             )
             for member_id in member_ids
         ])
+        self.db.flush()
+
+    def get_attendance_for_update(self, rehearsal_id: int) -> list[RehearsalAttendance]:
+        return list(self.db.scalars(
+            select(RehearsalAttendance).where(RehearsalAttendance.rehearsal_id == rehearsal_id)
+            .order_by(RehearsalAttendance.id).with_for_update()
+            .execution_options(populate_existing=True)
+        ))
+
+    def remove_attendance(self, attendance_ids: list[int]) -> None:
+        self.db.execute(delete(RehearsalAttendance).where(RehearsalAttendance.id.in_(attendance_ids)))
+
+    def flush(self) -> None:
         self.db.flush()
 
     @contextmanager

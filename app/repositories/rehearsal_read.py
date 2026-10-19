@@ -71,6 +71,14 @@ class RehearsalReadRepository:
             Rehearsal.id == rehearsal_id, self._visibility(user_id, is_admin),
         )).mappings().one_or_none()
 
+    def get_admin_for_update(self, user_id: int, rehearsal_id: int) -> Rehearsal | None:
+        return self.db.scalar(
+            select(Rehearsal).join(Ministry, Ministry.id == Rehearsal.ministry_id)
+            .where(Rehearsal.id == rehearsal_id, self._visibility(user_id, True))
+            .with_for_update(of=Rehearsal)
+            .execution_options(populate_existing=True)
+        )
+
     def get_participants(self, rehearsal_id: int) -> Sequence[RowMapping]:
         # Retain selected participants and recorded attendance even if their
         # membership subsequently becomes inactive. Only ADMIN calls this read.
