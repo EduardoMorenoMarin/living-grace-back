@@ -22,6 +22,10 @@ class RehearsalPersistenceError(Exception):
     pass
 
 
+class RehearsalValidationError(Exception):
+    pass
+
+
 class ProfilePersistenceError(Exception):
     pass
 

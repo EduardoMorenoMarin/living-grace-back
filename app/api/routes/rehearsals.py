@@ -2,7 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.core.exceptions import MinistryNotFound, RehearsalPersistenceError
+from app.core.exceptions import MinistryNotFound, RehearsalPersistenceError, RehearsalValidationError
 from app.dependencies.authorization import require_global_admin
 from app.dependencies.rehearsals import get_rehearsal_creator
 from app.models.user import User
@@ -23,5 +23,7 @@ def create_rehearsal(
         return creator.create(data, user.id)
     except MinistryNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
+    except RehearsalValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     except RehearsalPersistenceError:
         raise HTTPException(status_code=500, detail="Unable to create rehearsal.") from None

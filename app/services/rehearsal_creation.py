@@ -1,6 +1,6 @@
 import logging
 
-from app.core.exceptions import MinistryNotFound
+from app.core.exceptions import MinistryNotFound, RehearsalValidationError
 from app.models.rehearsal import Rehearsal
 from app.repositories.membership import MembershipRepository
 from app.repositories.rehearsal import RehearsalRepository
@@ -26,8 +26,12 @@ class RehearsalCreator:
         with self.repository.transaction():
             if self.memberships.get_ministry(data.ministry_id) is None:
                 raise MinistryNotFound("Ministry does not exist.")
-            rehearsal = Rehearsal(**data.model_dump(), created_by=user_id)
+            eligible_ids = self.repository.eligible_participant_ids(data.ministry_id, data.ministry_member_ids)
+            if eligible_ids != set(data.ministry_member_ids):
+                raise RehearsalValidationError("Selected participants are not available for this ministry.")
+            rehearsal = Rehearsal(**data.model_dump(exclude={"ministry_member_ids"}), created_by=user_id)
             self.repository.add(rehearsal)
+            self.repository.add_attendance(rehearsal.id, data.ministry_member_ids)
             result = RehearsalResponse.model_validate(rehearsal)
         return result
 

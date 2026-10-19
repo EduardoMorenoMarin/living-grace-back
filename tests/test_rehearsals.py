@@ -32,6 +32,7 @@ from app.models.ministry_member import MinistryMember
 from app.models.ministry_member_role import MinistryMemberRole
 from app.models.role import Role
 from app.models.rehearsal import Rehearsal
+from app.models.rehearsal_attendance import RehearsalAttendance
 from app.models.user import User
 from app.repositories.membership import MembershipRepository
 from app.repositories.rehearsal import RehearsalRepository
@@ -77,6 +78,20 @@ class RehearsalContract:
             self.assignment_id = secrets.randbelow(9223372036854775807) + 1
             db.add(MinistryMemberRole(id=self.assignment_id, ministry_member_id=member.id,
                                      role_id=self.admin_role_id))
+            self.participant_ids = []
+            for index in range(3):
+                participant = User(
+                    email=f"participant-{index}-{unique}@example.com", username=f"participant-{index}-{unique}",
+                    password_hash="unused", first_name="Participant", last_name=str(index),
+                )
+                db.add(participant)
+                db.flush()
+                participant_member = MinistryMember(
+                    user_id=participant.id, ministry_id=ministry.id, status=MembershipStatus.ACTIVE,
+                )
+                db.add(participant_member)
+                db.flush()
+                self.participant_ids.append(participant_member.id)
             db.commit()
 
         def override_db():
@@ -94,6 +109,7 @@ class RehearsalContract:
         self.payload = {
             "ministry_id": self.ministry_id, "name": "Worship Team Rehearsal",
             "start_at": "2026-10-03T19:00:00-05:00", "end_at": "2026-10-03T21:00:00-05:00",
+            "ministry_member_ids": self.participant_ids[:1],
         }
 
     def post(self, **changes):
@@ -102,6 +118,106 @@ class RehearsalContract:
     def rows(self):
         with self.session_factory() as db:
             return list(db.scalars(select(Rehearsal).where(Rehearsal.ministry_id == self.ministry_id)))
+
+    def attendance_rows(self):
+        with self.session_factory() as db:
+            return list(db.scalars(select(RehearsalAttendance).where(
+                RehearsalAttendance.ministry_member_id.in_(self.participant_ids),
+            )))
+
+    def test_multiple_selected_participants_are_persisted_with_null_attendance(self):
+        response = self.post(ministry_member_ids=self.participant_ids[:2])
+        self.assertEqual(response.status_code, 201, response.text)
+        records = self.attendance_rows()
+        self.assertEqual(len(records), 2)
+        self.assertEqual({row.ministry_member_id for row in records}, set(self.participant_ids[:2]))
+        self.assertEqual({row.rehearsal_id for row in records}, {response.json()["id"]})
+        self.assertEqual(len({row.id for row in records}), 2)
+        for record in records:
+            self.assertTrue(0 < record.id <= 9223372036854775807)
+            self.assertIsNone(record.arrival_at)
+            self.assertIsNone(record.attendance_status)
+
+    def test_participant_list_validation(self):
+        invalid = [[], None, {}, "1", [self.participant_ids[0]] * 2]
+        invalid += [[value] for value in (0, -1, True, "1", 1.5, None, 9223372036854775808)]
+        for value in invalid:
+            with self.subTest(value=value):
+                self.assertEqual(self.post(ministry_member_ids=value).status_code, 422)
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(self.attendance_rows(), [])
+
+    def test_nonexistent_participant_rejected_before_inserts(self):
+        with patch.object(RehearsalRepository, "add") as add:
+            response = self.post(ministry_member_ids=[self.participant_ids[0], 9223372036854775807])
+        self.assertEqual(response.status_code, 422)
+        add.assert_not_called()
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(self.attendance_rows(), [])
+
+    def test_ineligible_participants_rejected_before_inserts(self):
+        member_id = self.participant_ids[1]
+        for target, attribute, value in (
+            (MinistryMember, "status", MembershipStatus.PENDING),
+            (MinistryMember, "status", MembershipStatus.INACTIVE),
+            (MinistryMember, "deleted_at", datetime.now(timezone.utc)),
+            (User, "status", UserStatus.INACTIVE),
+            (User, "deleted_at", datetime.now(timezone.utc)),
+        ):
+            with self.subTest(target=target, attribute=attribute, value=value):
+                with self.session_factory() as db:
+                    member = db.get(MinistryMember, member_id)
+                    entity = member if target is MinistryMember else db.get(User, member.user_id)
+                    identifier = entity.id
+                    original = getattr(entity, attribute)
+                    setattr(entity, attribute, value)
+                    db.commit()
+                with patch.object(RehearsalRepository, "add") as add:
+                    response = self.post(ministry_member_ids=self.participant_ids[:2])
+                self.assertEqual(response.status_code, 422, response.text)
+                add.assert_not_called()
+                self.assertEqual(self.rows(), [])
+                self.assertEqual(self.attendance_rows(), [])
+                with self.session_factory() as db:
+                    setattr(db.get(target, identifier), attribute, original)
+                    db.commit()
+
+    def test_other_ministry_participant_rejected(self):
+        with self.session_factory() as db:
+            ministry = Ministry(name="Other participants")
+            db.add(ministry)
+            db.flush()
+            db.get(MinistryMember, self.participant_ids[1]).ministry_id = ministry.id
+            db.commit()
+        with patch.object(RehearsalRepository, "add") as add:
+            response = self.post(ministry_member_ids=self.participant_ids[:2])
+        self.assertEqual(response.status_code, 422)
+        add.assert_not_called()
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(self.attendance_rows(), [])
+
+    def test_attendance_insert_failure_rolls_back_all_records(self):
+        original = RehearsalRepository.add_attendance
+
+        def fail_after_partial_insert(repository, rehearsal_id, member_ids):
+            original(repository, rehearsal_id, member_ids[:1])
+            raise SQLAlchemyError("private attendance failure")
+
+        with patch.object(RehearsalRepository, "add_attendance", autospec=True, side_effect=fail_after_partial_insert):
+            response = self.post(ministry_member_ids=self.participant_ids[:2])
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json(), {"detail": "Unable to create rehearsal."})
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(self.attendance_rows(), [])
+        self.assertEqual(self.post(ministry_member_ids=self.participant_ids[:2]).status_code, 201)
+        self.assertEqual(len(self.attendance_rows()), 2)
+
+    def test_attendance_id_collision_rolls_back_all_records(self):
+        with patch("app.repositories.rehearsal.secrets.randbelow", return_value=123):
+            response = self.post(ministry_member_ids=self.participant_ids[:2])
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(self.attendance_rows(), [])
 
     def test_success_persists_authenticated_creator_and_server_fields(self):
         response = self.post()
@@ -160,7 +276,7 @@ class RehearsalContract:
         for changes in invalid:
             with self.subTest(changes=changes):
                 self.assertEqual(self.post(**changes).status_code, 422)
-        for field in ("ministry_id", "name", "start_at", "end_at"):
+        for field in ("ministry_id", "name", "start_at", "end_at", "ministry_member_ids"):
             payload = {key: value for key, value in self.payload.items() if key != field}
             self.assertEqual(self.client.post("/rehearsals", headers=self.headers, json=payload).status_code, 422)
         self.assertEqual(self.rows(), [])
@@ -171,11 +287,13 @@ class RehearsalContract:
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json(), {"detail": "Unable to create rehearsal."})
         self.assertEqual(self.rows(), [])
+        self.assertEqual(self.attendance_rows(), [])
         self.assertEqual(self.post().status_code, 201)
 
     def test_foreign_key_failure_rolls_back(self):
         with patch.object(MembershipRepository, "get_ministry", return_value=Ministry(id=9223372036854775807)):
-            response = self.post(ministry_id=9223372036854775807)
+            with patch.object(RehearsalRepository, "eligible_participant_ids", return_value=set(self.payload["ministry_member_ids"])):
+                response = self.post(ministry_id=9223372036854775807)
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json(), {"detail": "Unable to create rehearsal."})
         self.assertEqual(self.rows(), [])
