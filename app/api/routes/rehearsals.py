@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.exceptions import MinistryNotFound, RehearsalPersistenceError
-from app.dependencies.auth import get_current_user
+from app.dependencies.authorization import require_global_admin
 from app.dependencies.rehearsals import get_rehearsal_creator
 from app.models.user import User
 from app.schemas.rehearsal import RehearsalCreate, RehearsalResponse
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/rehearsals", tags=["rehearsals"])
 @router.post("", response_model=RehearsalResponse, status_code=status.HTTP_201_CREATED)
 def create_rehearsal(
     data: RehearsalCreate,
-    user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(require_global_admin)],
     creator: Annotated[RehearsalCreator, Depends(get_rehearsal_creator)],
 ) -> RehearsalResponse:
     try:
