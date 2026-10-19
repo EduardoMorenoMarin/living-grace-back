@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Identity, UniqueConstraint
+from sqlalchemy import BigInteger, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import ENUM
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,7 +19,7 @@ class RehearsalAttendance(Base):
     __tablename__ = "rehearsal_attendance"
     __table_args__ = (UniqueConstraint("rehearsal_id", "ministry_member_id"),)
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     rehearsal_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("rehearsals.id", ondelete="CASCADE"),
     )

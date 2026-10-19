@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Identity, Index, func, text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -25,7 +25,7 @@ class MinistryMemberRole(Base):
         ),
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     ministry_member_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("ministry_members.id"))
     role_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("roles.id"))
     assigned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

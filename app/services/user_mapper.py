@@ -2,10 +2,10 @@ from app.models.user import User
 from app.schemas.user import UserCreate
 
 
-class UserFactory:
+class UserMapper:
     """Map registration fields into a user, leaving database defaults intact."""
 
-    def create(self, data: UserCreate, password_hash: str) -> User:
+    def to_user(self, data: UserCreate, password_hash: str) -> User:
         return User(
             email=str(data.email),
             username=data.username,

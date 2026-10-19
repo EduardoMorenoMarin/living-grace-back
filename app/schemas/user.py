@@ -1,9 +1,10 @@
 from datetime import date, datetime
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr, StringConstraints
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr, StringConstraints, field_validator
 
 from app.models.enums import UserStatus
+from app.schemas.membership import MembershipCreate, MembershipResponse
 
 
 class UserCreate(BaseModel):
@@ -16,6 +17,15 @@ class UserCreate(BaseModel):
     last_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     phone: str | None = None
     birth_date: date | None = None
+    memberships: list[MembershipCreate] = Field(default_factory=list)
+
+    @field_validator("memberships")
+    @classmethod
+    def unique_ministries(cls, values: list[MembershipCreate]) -> list[MembershipCreate]:
+        ministry_ids = [membership.ministry_id for membership in values]
+        if len(ministry_ids) != len(set(ministry_ids)):
+            raise ValueError("Each ministry may only be selected once.")
+        return values
 
 
 class UserResponse(BaseModel):
@@ -32,3 +42,4 @@ class UserResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None
+    memberships: list[MembershipResponse] = Field(default_factory=list)
