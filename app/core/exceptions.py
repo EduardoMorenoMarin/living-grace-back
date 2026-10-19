@@ -14,6 +14,10 @@ class MinistryNotFound(Exception):
     pass
 
 
+class MinistryMembersPersistenceError(Exception):
+    pass
+
+
 class RehearsalPersistenceError(Exception):
     pass
 
