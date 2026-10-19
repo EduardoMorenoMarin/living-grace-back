@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
 
 from app.core.exceptions import RehearsalNotFound, RehearsalReadError
 from app.dependencies.rehearsal_read import get_rehearsal_read_service, get_rehearsal_viewer
@@ -17,9 +17,28 @@ from app.core.exceptions import RehearsalAttendanceConflict
 from app.dependencies.rehearsal_update import get_rehearsal_update_service
 from app.schemas.rehearsal_update import RehearsalUpdate
 from app.services.rehearsal_update import RehearsalUpdateService
+from app.dependencies.rehearsal_delete import get_rehearsal_delete_service
+from app.services.rehearsal_delete import RehearsalDeleteService
 
 
 router = APIRouter(prefix="/rehearsals", tags=["rehearsals"])
+
+
+@router.delete("/{rehearsal_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+def delete_rehearsal(
+    rehearsal_id: Annotated[int, Path(gt=0, le=9223372036854775807)],
+    user: Annotated[User, Depends(require_global_admin)],
+    service: Annotated[RehearsalDeleteService, Depends(get_rehearsal_delete_service)],
+) -> Response:
+    try:
+        service.delete(rehearsal_id, user.id)
+    except RehearsalNotFound:
+        raise HTTPException(status_code=404, detail="Rehearsal does not exist.") from None
+    except RehearsalAttendanceConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except RehearsalPersistenceError:
+        raise HTTPException(status_code=500, detail="Unable to delete rehearsal.") from None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.patch("/{rehearsal_id}", response_model=AdminRehearsalDetail)

@@ -60,6 +60,10 @@ class RehearsalRepository:
     def flush(self) -> None:
         self.db.flush()
 
+    def delete(self, rehearsal: Rehearsal) -> None:
+        self.db.delete(rehearsal)
+        self.db.flush()
+
     @contextmanager
     def transaction(self) -> Iterator[None]:
         try:
