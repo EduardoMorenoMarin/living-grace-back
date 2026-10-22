@@ -15,4 +15,5 @@ class UserProfile(BaseModel):
     phone: str | None
     birth_date: date | None
     created_at: datetime
+    is_global_admin: bool
     memberships: list[ProfileMembership] = Field(default_factory=list)
