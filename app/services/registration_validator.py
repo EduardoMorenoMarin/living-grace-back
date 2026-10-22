@@ -12,5 +12,3 @@ class RegistrationValidator:
     def validate(self, data: UserCreate) -> None:
         if self.repository.email_exists(str(data.email)):
             raise RegistrationConflict("Email is already registered.")
-        if self.repository.username_exists(data.username):
-            raise RegistrationConflict("Username is already registered.")

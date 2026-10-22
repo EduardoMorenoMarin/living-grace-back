@@ -16,8 +16,11 @@ class AuthorizationRepository:
         self.db = db
 
     def has_global_role(self, user_id: int, role_name: str) -> bool:
-        assignment = self._global_roles(user_id).where(Role.name == role_name)
-        return bool(self.db.scalar(select(assignment.exists())))
+        return bool(self.db.scalar(select(self.global_role_exists(user_id, role_name))))
+
+    def global_role_exists(self, user_id: int, role_name: str):
+        """Share the authorization predicate with queries that expose role status."""
+        return self._global_roles(user_id).where(Role.name == role_name).exists().correlate(None)
 
     def get_global_roles(self, user_id: int) -> set[str]:
         return set(self.db.scalars(self._global_roles(user_id).distinct()))

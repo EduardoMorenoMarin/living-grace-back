@@ -46,7 +46,7 @@ class PostgreSQLRehearsalDeleteConcurrencyTests(unittest.TestCase):
             ))
             self.assertIsNotNone(role_id, "Scratch database needs its existing ADMIN reference role.")
             unique = uuid4().hex
-            db.add(User(id=self.user_id, email=f"delete-race-{unique}@example.com", username=unique,
+            db.add(User(id=self.user_id, email=f"delete-race-{unique}@example.com",
                         password_hash="unused", first_name="Race", last_name="Test"))
             db.add(Ministry(id=self.ministry_id, name=f"Delete race {unique}"))
             db.flush()
@@ -56,7 +56,7 @@ class PostgreSQLRehearsalDeleteConcurrencyTests(unittest.TestCase):
                 # for the selected participant so a fresh assignment can race too.
             ])
             second_user_id = self.participant_id
-            db.add(User(id=second_user_id, email=f"participant-{unique}@example.com", username=f"p-{unique}",
+            db.add(User(id=second_user_id, email=f"participant-{unique}@example.com",
                         password_hash="unused", first_name="Participant", last_name="Test"))
             db.flush()
             db.add(MinistryMember(id=self.participant_id, ministry_id=self.ministry_id,

@@ -11,8 +11,6 @@ from app.core.exceptions import RegistrationConflict, RegistrationPersistenceErr
 from app.core.database import engine
 from app.models.user import User
 
-from sqlalchemy import or_, select
-
 logger = logging.getLogger(__name__)
 
 
@@ -47,9 +45,6 @@ class UserRepository:
     def email_exists(self, email: str) -> bool:
         return bool(self.db.scalar(select(select(User.id).where(User.email == email).exists())))
 
-    def username_exists(self, username: str) -> bool:
-        return bool(self.db.scalar(select(select(User.id).where(User.username == username).exists())))
-
     def add(self, user: User) -> None:
         self.db.add(user)
         # Fetch database-generated identity/defaults without committing the flow.
@@ -69,7 +64,7 @@ class UserRepository:
             self.db.rollback()
             # A concurrent request can insert after the uniqueness checks.
             if getattr(exc.orig, "sqlstate", None) == "23505":
-                raise RegistrationConflict("Email or username is already registered.") from None
+                raise RegistrationConflict("Email is already registered.") from None
             raise RegistrationPersistenceError("Unable to register user.") from None
         except SQLAlchemyError as exc:
             _log_persistence_error(exc)
@@ -77,7 +72,7 @@ class UserRepository:
             raise RegistrationPersistenceError("Unable to register user.") from None
 
     def get_by_identifier(self, identifier: str) -> User | None:
-        """Fetch a user by email or username, whichever matches."""
+        """Fetch a user by their email address."""
         return self.db.scalar(
-            select(User).where(or_(User.email == identifier, User.username == identifier))
+            select(User).where(User.email == identifier)
         )

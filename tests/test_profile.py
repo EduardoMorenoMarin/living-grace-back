@@ -11,6 +11,7 @@ os.environ.setdefault("JWT_SECRET_KEY", secrets.token_urlsafe(48))
 os.environ.setdefault("FRONTEND_ORIGIN", "http://localhost:3000")
 
 import jwt
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import BigInteger, Integer, MetaData, create_engine, event
 from sqlalchemy.exc import SQLAlchemyError
@@ -20,9 +21,12 @@ from sqlalchemy.pool import StaticPool
 from app.core.config import settings
 from app.core.database import Base
 from app.dependencies.database import get_db
+from app.dependencies.authorization import require_global_admin
+from app.repositories.authorization import AuthorizationRepository
 from app.main import app
-from app.models import Function, Ministry, MinistryMember, MinistryMemberFunction, User
-from app.models.enums import FunctionStatus, MembershipStatus, MinistryStatus, UserStatus
+from app.models import Function, Ministry, MinistryMember, MinistryMemberFunction, MinistryMemberRole, Role, User
+from app.models.enums import FunctionStatus, MembershipStatus, MinistryStatus, RoleScope, RoleStatus, UserStatus
+from app.services.password_hasher import PasswordHasher
 from app.services.token import TokenService
 
 
@@ -41,11 +45,11 @@ class ProfileTests(unittest.TestCase):
         metadata.create_all(self.engine)
         self.db = self.stack.enter_context(Session(self.engine, autoflush=False))
         self.user = User(
-            email="test@example.com", username="test", password_hash="private-hash",
+            email="test@example.com", password_hash="private-hash",
             first_name="Test", last_name="Two", phone="987654322",
             birth_date=date(2000, 1, 1), status=UserStatus.ACTIVE,
         )
-        self.other = User(email="other@example.com", username="other", password_hash="other-hash",
+        self.other = User(email="other@example.com", password_hash="other-hash",
                           first_name="Other", last_name="User")
         self.db.add_all([self.user, self.other])
         self.db.commit()
@@ -80,7 +84,7 @@ class ProfileTests(unittest.TestCase):
         response = self.get()
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
-        self.assertEqual(set(body), {"first_name", "last_name", "email", "phone", "birth_date", "created_at", "memberships"})
+        self.assertEqual(set(body), {"first_name", "last_name", "email", "phone", "birth_date", "created_at", "memberships", "is_global_admin"})
         self.assertEqual(body["email"], "test@example.com")
         self.assertEqual(body["birth_date"], "2000-01-01")
         self.assertEqual(body["first_name"], "Test")
@@ -89,6 +93,101 @@ class ProfileTests(unittest.TestCase):
         self.assertTrue(body["created_at"])
         for secret in ("private-hash", "password", "access_token", "refresh_token", "username"):
             self.assertNotIn(secret, response.text)
+
+    def test_existing_user_email_login_and_token_authenticate_profile(self):
+        password = "Existing-account-password-123!"
+        self.user.password_hash = PasswordHasher().hash(password)
+        self.db.commit()
+        response = self.client.post("/auth/login", json={
+            "identifier": self.user.email, "password": password,
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        token = response.json()["access_token"]
+        claims = jwt.decode(token, settings.JWT_SECRET_KEY.get_secret_value(),
+                            algorithms=[settings.JWT_ALGORITHM])
+        self.assertEqual(claims["sub"], str(self.user_id))
+        profile = self.client.get("/users/me", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(profile.status_code, 200, profile.text)
+        self.assertEqual(profile.json()["email"], self.user.email)
+        self.assertNotIn("username", profile.json())
+
+    def assign_role(self, member, name="ADMIN", scope=RoleScope.GLOBAL):
+        role = self.db.query(Role).filter_by(name=name, scope=scope).one_or_none()
+        if role is None:
+            role = Role(name=name, scope=scope, status=RoleStatus.ACTIVE, is_system_role=True)
+            self.db.add(role)
+            self.db.flush()
+        assignment = MinistryMemberRole(id=member.id, ministry_member_id=member.id, role_id=role.id)
+        self.db.add(assignment)
+        self.db.commit()
+        return role, assignment
+
+    def assert_admin_status(self, expected):
+        response = self.get()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIs(response.json()["is_global_admin"], expected)
+        repository = AuthorizationRepository(self.db)
+        if expected:
+            self.assertIs(require_global_admin(self.user, repository), self.user)
+        else:
+            with self.assertRaises(HTTPException) as error:
+                require_global_admin(self.user, repository)
+            self.assertEqual(error.exception.status_code, 403)
+
+    def test_active_global_admin_matches_authorization(self):
+        member = self.membership("Admin ministry", ["Vocals"], status=MembershipStatus.ACTIVE)
+        self.assign_role(member)
+        self.assert_admin_status(True)
+        self.assertEqual(self.get().json()["memberships"],
+                         [{"ministry": "Admin ministry", "functions": ["Vocals"]}])
+
+    def test_global_user_is_not_admin(self):
+        member = self.membership("User ministry", [], status=MembershipStatus.ACTIVE)
+        self.assign_role(member, name="USER")
+        self.assert_admin_status(False)
+
+    def test_no_memberships_is_not_admin(self):
+        self.assert_admin_status(False)
+
+    def test_invalid_admin_assignments_match_authorization(self):
+        member = self.membership("Admin ministry", [], status=MembershipStatus.ACTIVE)
+        role, assignment = self.assign_role(member)
+        ministry = self.db.get(Ministry, member.ministry_id)
+        for entity, attribute, value in (
+            (assignment, "revoked_at", datetime.now(timezone.utc)),
+            (member, "status", MembershipStatus.PENDING),
+            (member, "status", MembershipStatus.INACTIVE),
+            (member, "deleted_at", datetime.now(timezone.utc)),
+            (ministry, "status", MinistryStatus.INACTIVE),
+            (ministry, "deleted_at", datetime.now(timezone.utc)),
+            (role, "status", RoleStatus.INACTIVE),
+            (role, "deleted_at", datetime.now(timezone.utc)),
+            (role, "scope", RoleScope.MINISTRY),
+            (role, "name", "USER"),
+        ):
+            with self.subTest(entity=type(entity).__name__, attribute=attribute, value=value):
+                previous = getattr(entity, attribute)
+                setattr(entity, attribute, value)
+                self.db.commit()
+                self.assert_admin_status(False)
+                setattr(entity, attribute, previous)
+                self.db.commit()
+                self.assert_admin_status(True)
+
+    def test_one_valid_admin_membership_is_sufficient(self):
+        invalid = self.membership("Inactive membership", [], status=MembershipStatus.INACTIVE)
+        self.assign_role(invalid)
+        regular = self.membership("Regular membership", [], status=MembershipStatus.ACTIVE)
+        self.assign_role(regular, name="USER")
+        self.assert_admin_status(False)
+        valid = self.membership("Valid admin membership", [], status=MembershipStatus.ACTIVE)
+        self.assign_role(valid)
+        self.assert_admin_status(True)
+
+    def test_other_users_admin_assignment_does_not_grant_admin(self):
+        member = self.membership("Other admin", [], user_id=self.other.id, status=MembershipStatus.ACTIVE)
+        self.assign_role(member)
+        self.assert_admin_status(False)
 
     def test_missing_authentication(self):
         for headers in ({}, {"Authorization": "Basic invalid"}):

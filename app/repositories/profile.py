@@ -12,6 +12,7 @@ from app.models.ministry import Ministry
 from app.models.ministry_member import MinistryMember
 from app.models.ministry_member_function import MinistryMemberFunction
 from app.models.user import User
+from app.repositories.authorization import AuthorizationRepository
 
 
 class ProfileRepository:
@@ -25,6 +26,7 @@ class ProfileRepository:
             select(
                 User.first_name, User.last_name, User.email, User.phone,
                 User.birth_date, User.created_at,
+                AuthorizationRepository(self.db).global_role_exists(user_id, "ADMIN").label("is_global_admin"),
                 Ministry.id.label("ministry_id"), Ministry.name.label("ministry"),
                 Function.name.label("function"),
             )

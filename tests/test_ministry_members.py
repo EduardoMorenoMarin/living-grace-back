@@ -67,7 +67,7 @@ class MinistryMembersTests(unittest.TestCase):
 
     def member(self, ministry_id=1, first_name="Example", status=MembershipStatus.ACTIVE):
         unique = secrets.token_hex(8)
-        user = User(email=f"{unique}@example.com", username=unique, password_hash="private-hash",
+        user = User(email=f"{unique}@example.com", password_hash="private-hash",
                     first_name=first_name, last_name="Member", status=UserStatus.ACTIVE)
         self.db.add(user)
         self.db.flush()
@@ -100,6 +100,7 @@ class MinistryMembersTests(unittest.TestCase):
             "first_name": "Example", "last_name": "Member", "functions": ["Teclado", "Vocalista"],
         }]})
         self.assertNotIn("private-hash", response.text)
+        self.assertNotIn("username", response.text)
         self.assertNotIn("email", response.json()["members"][0])
 
     def test_user_and_no_role_are_forbidden_before_member_query(self):

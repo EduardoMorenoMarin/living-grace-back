@@ -22,7 +22,7 @@ class ProfileService:
                 membership.functions.append(row["function"])
         return UserProfile(
             **{key: rows[0][key] for key in (
-                "first_name", "last_name", "email", "phone", "birth_date", "created_at",
+                "first_name", "last_name", "email", "phone", "birth_date", "created_at", "is_global_admin",
             )},
             memberships=list(memberships.values()),
         )

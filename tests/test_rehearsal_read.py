@@ -58,7 +58,7 @@ class RehearsalReadTests(unittest.TestCase):
         self.db = self.stack.enter_context(Session(self.engine, autoflush=False))
         self.db.add_all([Ministry(id=i, name=f"Ministry {i}") for i in (11, 12, 13)])
         self.db.add_all([
-            User(id=i, email=f"user{i}@example.com", username=f"user{i}", password_hash="private-hash",
+            User(id=i, email=f"user{i}@example.com", password_hash="private-hash",
                  first_name=name, last_name="Last", status=UserStatus.ACTIVE)
             for i, name in ((101, "Admin"), (102, "Regular"), (103, "OtherAdmin"), (104, "OtherParticipant"))
         ])
@@ -163,6 +163,7 @@ class RehearsalReadTests(unittest.TestCase):
             {"ministry_member_id": 206, "user_id": 104, "first_name": "OtherParticipant", "last_name": "Last",
              "functions": [], "arrival_at": None, "attendance_status": None},
         ])
+        self.assertNotIn("username", response.text)
         self.assertIsNotNone(body["participants"][0]["arrival_at"])
         self.assertEqual(self.get(305).json()["participants"], [])
 
