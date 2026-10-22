@@ -1,3 +1,4 @@
+from app.models.enums import MembershipStatus
 from app.models.ministry_member import MinistryMember
 from app.models.ministry_member_function import MinistryMemberFunction
 from app.repositories.membership import MembershipRepository
@@ -18,6 +19,7 @@ class MembershipRegistrationService:
             membership = MinistryMember(
                 user_id=user_id,
                 ministry_id=selection.ministry_id,
+                status=MembershipStatus.ACTIVE,
                 ministry_member_functions=[
                     MinistryMemberFunction(function_id=function_id)
                     for function_id in selection.function_ids

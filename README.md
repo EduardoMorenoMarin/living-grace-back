@@ -298,7 +298,8 @@ The implementation keeps the verified live mappings rather than renaming tables 
 executing the supplied DDL. If that export describes a different intended deployment,
 verify that deployment separately before using it with this backend.
 
-Live membership status defaults to `PENDING`. Neither `main_instrument` nor
+The database membership default remains `PENDING`; registration explicitly assigns
+`ACTIVE` to every new membership without changing existing records. Neither `main_instrument` nor
 `technical_area` exists in the membership table. The proposed columns and migration
 have been removed. No database schema changes are required or were applied.
 
@@ -333,7 +334,7 @@ ID. The HTTP 201 response includes the existing safe user fields and a `membersh
 array containing objects such as:
 
 ```json
-{"id": 100, "ministry_id": 1, "status": "PENDING", "function_ids": [10, 11]}
+{"id": 100, "ministry_id": 1, "status": "ACTIVE", "function_ids": [10, 11]}
 ```
 
 Requests without memberships remain supported and return `"memberships": []`.
@@ -475,7 +476,7 @@ other ministries, no bypass of mandatory function validation, and no partial use
 when a later membership fails the new rule. Unit tests verify rule order, early
 exit, validated inputs, and no redundant database lookups.
 
-User creation, optional memberships/functions, `PENDING` membership status, and
+User creation, optional memberships/functions, `ACTIVE` membership status, and
 public role rejection are preserved. The existing foreign-key, persistence-failure,
 and commit-failure rollback tests still apply. No migration is required. Live
 function assignments retain the verified `ministry_member_functions` mapping noted
@@ -484,3 +485,66 @@ in the schema audit above.
 The OpenAPI schema is identical before and after the refactor. Run the suite using
 the commands in the Tests section; PostgreSQL coverage remains opt-in and uses
 rollback-protected fixtures without schema changes.
+
+
+### Ministry membership approval
+
+Both endpoints require `Authorization: Bearer <access_token>` and the existing
+GLOBAL ADMIN dependency, which checks current database privileges. Registration
+creates ACTIVE memberships with automatic GLOBAL USER role assignment. Existing
+PENDING memberships can still be approved; JWT claims and login responses are unchanged.
+
+`GET /ministries/1/members?status=PENDING` lists pending members. Supported filters
+are `PENDING`, `ACTIVE`, and `INACTIVE`; omitting the filter returns only `ACTIVE`.
+There is no unfiltered mode. The existing response gains a membership `status`:
+
+```json
+{
+  "ministry_id": 1,
+  "members": [{
+    "ministry_member_id": 42,
+    "user_id": 12,
+    "first_name": "Ana",
+    "last_name": "Garcia",
+    "status": "PENDING",
+    "functions": ["Guitar"]
+  }]
+}
+```
+
+Approve using `PATCH /ministries/1/members/42/status` with only:
+
+```json
+{"status": "ACTIVE"}
+```
+
+The successful response is:
+
+```json
+{"ministry_id": 1, "ministry_member_id": 42, "status": "ACTIVE"}
+```
+
+Only PENDING → ACTIVE is supported. Repeated approval or an INACTIVE source returns
+409. Invalid statuses, extra body fields, and invalid path IDs return 422. Missing,
+wrong-ministry, or deleted memberships and unavailable users/ministries return 404.
+Users and ministries must be ACTIVE and not deleted; listings apply the same
+eligibility checks. Authentication failures return 401, and authenticated users
+without GLOBAL ADMIN privileges receive 403. Database failures return a generic 500
+and roll back the transaction. Approval locks eligibility rows through commit and
+preserves membership identity, function assignments, role assignments, and attendance.
+
+Frontend: use the returned `ministry_member_id` in the approval URL, send the existing
+bearer token, and refresh both PENDING and ACTIVE lists after a successful approval.
+Handle 409 by refreshing the pending list; never infer backend permission from a
+frontend role check. No schema migration or Supabase change is required.
+
+Local workflow coverage:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -p test_ministry_members.py -v
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+These commands use isolated local fixtures by default. PostgreSQL integration tests
+remain opt-in; do not enable them against Supabase automatically. PostgreSQL row-lock
+behavior is not exercised by the SQLite membership tests.

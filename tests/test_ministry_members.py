@@ -97,7 +97,7 @@ class MinistryMembersTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), {"ministry_id": 1, "members": [{
             "ministry_member_id": member.id, "user_id": member.user_id,
-            "first_name": "Example", "last_name": "Member", "functions": ["Teclado", "Vocalista"],
+            "first_name": "Example", "last_name": "Member", "status": "ACTIVE", "functions": ["Teclado", "Vocalista"],
         }]})
         self.assertNotIn("private-hash", response.text)
         self.assertNotIn("username", response.text)
@@ -220,3 +220,131 @@ class MinistryMembersTests(unittest.TestCase):
             response = self.get()
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json(), {"detail": "Unable to retrieve ministry members."})
+
+
+    def approve(self, member_id, ministry_id=1, payload=None, headers=None):
+        return self.client.patch(
+            f"/ministries/{ministry_id}/members/{member_id}/status",
+            json=payload if payload is not None else {"status": "ACTIVE"},
+            headers=self.headers if headers is None else headers,
+        )
+
+    def test_status_filters_and_approval_preserve_relationships(self):
+        pending = self.member(status=MembershipStatus.PENDING)
+        active = self.member()
+        inactive = self.member(status=MembershipStatus.INACTIVE)
+        _, assignment = self.function(pending, "Guitar")
+        role = MinistryMemberRole(id=51, ministry_member_id=pending.id, role_id=38)
+        self.db.add(role)
+        self.db.commit()
+        for status, expected in (("PENDING", pending), ("ACTIVE", active), ("INACTIVE", inactive)):
+            response = self.client.get(f"/ministries/1/members?status={status}", headers=self.headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual([m["ministry_member_id"] for m in response.json()["members"]], [expected.id])
+            self.assertEqual(response.json()["members"][0]["status"], status)
+        self.assertEqual(len(self.get().json()["members"]), 1)
+        response = self.approve(pending.id)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"ministry_id": 1, "ministry_member_id": pending.id, "status": "ACTIVE"})
+        self.assertEqual(len(self.get().json()["members"]), 2)
+        self.assertEqual(self.client.get("/ministries/1/members?status=PENDING", headers=self.headers).json()["members"], [])
+        self.assertEqual(self.db.get(MinistryMemberFunction, assignment.id).function_id, assignment.function_id)
+        self.assertIsNone(assignment.revoked_at)
+        self.assertEqual(self.db.get(MinistryMemberRole, role.id).role_id, 38)
+        self.assertEqual(self.get().json()["members"][0]["functions"], ["Guitar"])
+
+    def test_approval_requires_real_global_admin(self):
+        member = self.member(status=MembershipStatus.PENDING)
+        self.db.commit()
+        for headers in ({}, {"Authorization": "Bearer invalid"}):
+            self.assertEqual(self.approve(member.id, headers=headers).status_code, 401)
+        self.assignment.role_id = 38
+        self.db.commit()
+        self.assertEqual(self.approve(member.id).status_code, 403)
+        self.assertEqual(self.db.get(MinistryMember, member.id).status, MembershipStatus.PENDING)
+
+    def test_approval_ids_statuses_and_transitions(self):
+        pending = self.member(status=MembershipStatus.PENDING)
+        active = self.member()
+        inactive = self.member(status=MembershipStatus.INACTIVE)
+        self.db.commit()
+        for member_id, ministry_id in ((pending.id, 2), (999, 1), (pending.id, 999)):
+            self.assertEqual(self.approve(member_id, ministry_id).status_code, 404)
+        for value in (0, -1, "abc", 9223372036854775808):
+            self.assertEqual(self.approve(value).status_code, 422)
+            self.assertEqual(self.approve(pending.id, value).status_code, 422)
+        for payload in ({}, {"status": "PENDING"}, {"status": "INACTIVE"}, {"status": "INVALID"},
+                        {"status": "ACTIVE", "user_id": 1}, {"status": None}):
+            self.assertEqual(self.approve(pending.id, payload=payload).status_code, 422)
+        for member in (active, inactive):
+            self.assertEqual(self.approve(member.id).status_code, 409)
+        self.assertEqual(self.client.get("/ministries/1/members?status=ALL", headers=self.headers).status_code, 422)
+
+    def test_unavailable_records_cannot_be_approved_or_listed_as_pending(self):
+        for target, attribute, value in (
+            ("membership", "deleted_at", datetime.now(timezone.utc)),
+            ("user", "deleted_at", datetime.now(timezone.utc)),
+            ("user", "status", UserStatus.INACTIVE),
+            ("ministry", "deleted_at", datetime.now(timezone.utc)),
+            ("ministry", "status", MinistryStatus.INACTIVE),
+        ):
+            with self.subTest(target=target, attribute=attribute):
+                member = self.member(status=MembershipStatus.PENDING)
+                record = {"membership": member, "user": self.db.get(User, member.user_id),
+                          "ministry": self.db.get(Ministry, 1)}[target]
+                old = getattr(record, attribute)
+                setattr(record, attribute, value)
+                self.db.commit()
+                self.assertEqual(self.approve(member.id).status_code, 404)
+                response = self.client.get("/ministries/1/members?status=PENDING", headers=self.headers)
+                if target == "ministry":
+                    self.assertEqual(response.status_code, 404)
+                else:
+                    self.assertNotIn(member.id, [m["ministry_member_id"] for m in response.json()["members"]])
+                setattr(record, attribute, old)
+                self.db.commit()
+
+    def test_approval_commit_failure_rolls_back(self):
+        member = self.member(status=MembershipStatus.PENDING)
+        self.db.commit()
+        with patch.object(self.db, "commit", side_effect=SQLAlchemyError("private details")):
+            response = self.approve(member.id)
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json(), {"detail": "Unable to update membership status."})
+        self.assertEqual(self.db.get(MinistryMember, member.id).status, MembershipStatus.PENDING)
+        self.assertEqual(self.approve(member.id).status_code, 200)
+        self.assertEqual(self.approve(member.id).status_code, 409)
+
+
+    def test_registered_memberships_are_active_visible_and_keep_global_user_roles(self):
+        existing = self.member(status=MembershipStatus.PENDING)
+        function, _ = self.function(existing, "Guitar")
+        self.db.commit()
+        response = self.client.post("/users/register", json={
+            "email": f"registration-{secrets.token_hex(8)}@example.com",
+            "password": "Registration-password-123!",
+            "first_name": "New", "last_name": "Member",
+            "memberships": [
+                {"ministry_id": 1, "function_ids": [function.id]},
+                {"ministry_id": 2},
+            ],
+        })
+        self.assertEqual(response.status_code, 201, response.text)
+        body = response.json()
+        self.assertEqual(len(body["memberships"]), 2)
+        for membership in body["memberships"]:
+            self.assertEqual(membership["status"], "ACTIVE")
+            stored = self.db.get(MinistryMember, membership["id"])
+            self.assertEqual(stored.status, MembershipStatus.ACTIVE)
+            self.assertEqual([a.role_id for a in stored.ministry_member_roles], [38])
+            self.assertIsNone(stored.ministry_member_roles[0].revoked_at)
+            listing = self.get(membership["ministry_id"])
+            self.assertEqual(listing.status_code, 200, listing.text)
+            self.assertIn({
+                "ministry_member_id": stored.id, "user_id": body["id"],
+                "first_name": "New", "last_name": "Member", "status": "ACTIVE",
+                "functions": ["Guitar"] if stored.ministry_id == 1 else [],
+            }, listing.json()["members"])
+        self.assertEqual(self.db.get(MinistryMember, existing.id).status, MembershipStatus.PENDING)
+        user_headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(body['id'])}"}
+        self.assertEqual(self.client.get("/ministries/1/members", headers=user_headers).status_code, 403)

@@ -151,10 +151,10 @@ class MembershipRegistrationContract:
             for returned, selection in zip(body["memberships"], selections):
                 membership = by_ministry[selection["ministry_id"]]
                 self.assertEqual(returned, {
-                    "id": membership.id, "ministry_id": membership.ministry_id, "status": "PENDING",
+                    "id": membership.id, "ministry_id": membership.ministry_id, "status": "ACTIVE",
                     "function_ids": selection.get("function_ids", []),
                 })
-                self.assertEqual(membership.status, "PENDING")
+                self.assertEqual(membership.status, "ACTIVE")
                 self.assertIsNotNone(membership.created_at)
                 self.assertIsNotNone(membership.updated_at)
                 self.assertIsNone(membership.deleted_at)
