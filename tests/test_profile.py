@@ -23,6 +23,7 @@ from app.dependencies.database import get_db
 from app.main import app
 from app.models import Function, Ministry, MinistryMember, MinistryMemberFunction, User
 from app.models.enums import FunctionStatus, MembershipStatus, MinistryStatus, UserStatus
+from app.services.password_hasher import PasswordHasher
 from app.services.token import TokenService
 
 
@@ -41,11 +42,11 @@ class ProfileTests(unittest.TestCase):
         metadata.create_all(self.engine)
         self.db = self.stack.enter_context(Session(self.engine, autoflush=False))
         self.user = User(
-            email="test@example.com", username="test", password_hash="private-hash",
+            email="test@example.com", password_hash="private-hash",
             first_name="Test", last_name="Two", phone="987654322",
             birth_date=date(2000, 1, 1), status=UserStatus.ACTIVE,
         )
-        self.other = User(email="other@example.com", username="other", password_hash="other-hash",
+        self.other = User(email="other@example.com", password_hash="other-hash",
                           first_name="Other", last_name="User")
         self.db.add_all([self.user, self.other])
         self.db.commit()
@@ -89,6 +90,23 @@ class ProfileTests(unittest.TestCase):
         self.assertTrue(body["created_at"])
         for secret in ("private-hash", "password", "access_token", "refresh_token", "username"):
             self.assertNotIn(secret, response.text)
+
+    def test_existing_user_email_login_and_token_authenticate_profile(self):
+        password = "Existing-account-password-123!"
+        self.user.password_hash = PasswordHasher().hash(password)
+        self.db.commit()
+        response = self.client.post("/auth/login", json={
+            "identifier": self.user.email, "password": password,
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        token = response.json()["access_token"]
+        claims = jwt.decode(token, settings.JWT_SECRET_KEY.get_secret_value(),
+                            algorithms=[settings.JWT_ALGORITHM])
+        self.assertEqual(claims["sub"], str(self.user_id))
+        profile = self.client.get("/users/me", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(profile.status_code, 200, profile.text)
+        self.assertEqual(profile.json()["email"], self.user.email)
+        self.assertNotIn("username", profile.json())
 
     def test_missing_authentication(self):
         for headers in ({}, {"Authorization": "Basic invalid"}):

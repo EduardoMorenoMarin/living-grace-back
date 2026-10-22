@@ -50,7 +50,7 @@ class RehearsalContract:
         self.addCleanup(stack.close)
         with self.session_factory() as db:
             unique = uuid4().hex
-            user = User(email=f"rehearsal-{unique}@example.com", username=unique,
+            user = User(email=f"rehearsal-{unique}@example.com",
                         password_hash="unused", first_name="Test", last_name="Creator")
             ministry = Ministry(name="Rehearsal test")
             db.add_all([user, ministry])
@@ -81,7 +81,7 @@ class RehearsalContract:
             self.participant_ids = []
             for index in range(3):
                 participant = User(
-                    email=f"participant-{index}-{unique}@example.com", username=f"participant-{index}-{unique}",
+                    email=f"participant-{index}-{unique}@example.com",
                     password_hash="unused", first_name="Participant", last_name=str(index),
                 )
                 db.add(participant)
@@ -434,7 +434,7 @@ class SQLiteRehearsalTests(RehearsalContract, unittest.TestCase):
 
     def test_other_users_admin_does_not_grant_permission(self):
         with self.session_factory() as db:
-            other = User(email="other@example.com", username="other", password_hash="unused",
+            other = User(email="other@example.com", password_hash="unused",
                          first_name="Other", last_name="User")
             db.add(other)
             db.flush()

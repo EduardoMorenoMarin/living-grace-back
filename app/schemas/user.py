@@ -11,7 +11,6 @@ class UserCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     email: EmailStr
-    username: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     password: SecretStr = Field(min_length=8, max_length=128)
     first_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     last_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -33,7 +32,6 @@ class UserResponse(BaseModel):
 
     id: int
     email: str
-    username: str
     first_name: str
     last_name: str
     phone: str | None

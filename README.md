@@ -6,8 +6,8 @@ Only `POST /rehearsals` is added. The existing ORM schema uses `name`,
 `start_at`, `end_at`, and `tolerance_minutes`; there are no `title`,
 `rehearsal_date`, or `location` columns. No database schema changes are needed.
 
-Log in using `POST /auth/login` with `identifier` and `password`, then send the
-returned access token as `Authorization: Bearer <access_token>`. In `/docs`, use
+Log in using `POST /auth/login` with the email address in `identifier` and `password`, then
+send the returned access token as `Authorization: Bearer <access_token>`. In `/docs`, use
 Authorize to enter that token and execute `POST /rehearsals` with an existing
 ministry ID:
 
@@ -185,7 +185,6 @@ details; do not publish their raw output or your `.env` file.
 ```json
 {
   "email": "member@example.com",
-  "username": "member",
   "password": "Example-password-123!",
   "first_name": "Example",
   "last_name": "Member",
@@ -194,7 +193,7 @@ details; do not publish their raw output or your `.env` file.
 }
 ```
 
-Email must be valid. Username and names must contain non-whitespace characters;
+Email must be valid. First and last names must contain non-whitespace characters;
 surrounding whitespace is trimmed. Passwords must contain 8–128 characters and
 are not trimmed. Optional `birth_date` uses `YYYY-MM-DD`. Optional `memberships` adds ministry and
 function selections using existing IDs. Unknown fields are
@@ -204,7 +203,7 @@ email normalization is provided by Pydantic's `EmailStr`.
 
 Success returns `201` and the user's public fields, including database-generated
 ID, status, and timestamps. Neither the password nor its Argon2id hash is returned.
-Duplicate email or username returns `409`, including insert-time unique conflicts.
+Duplicate email returns `409`, including insert-time unique conflicts.
 Invalid requests return `422`; persistence failures return a generic `500` and
 roll back the transaction. Validation errors omit submitted values to avoid
 echoing passwords.
@@ -305,14 +304,13 @@ have been removed. No database schema changes are required or were applied.
 
 ### Request and response
 
-Personal fields remain unchanged: email, username, password, first/last name,
+Personal fields include email, password, first/last name,
 optional phone and birth date. Add an optional `memberships` list with existing
 `ministry_id` and `function_ids` values:
 
 ```json
 {
   "email": "member@example.com",
-  "username": "member",
   "password": "Example-password-123!",
   "first_name": "Example",
   "last_name": "Member",

@@ -24,7 +24,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 from pydantic import SecretStr, ValidationError
-from sqlalchemy import event, or_, select
+from sqlalchemy import event, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -49,7 +49,6 @@ def test_account():
     token = uuid4().hex
     return {
         "email": f"login-{token}@example.com",
-        "username": f"login_{token}",
         "password": "Login-test-password-123!",
         "first_name": "Login",
         "last_name": "Test",
@@ -66,7 +65,7 @@ class LoginTests(unittest.TestCase):
         stack.enter_context(patch.object(settings, "JWT_EXPIRE_MINUTES", 60))
         self.account = test_account()
         self.user = User(
-            id=123, email=self.account["email"], username=self.account["username"],
+            id=123, email=self.account["email"],
             first_name="Login", last_name="Test", status=UserStatus.ACTIVE,
             password_hash=PasswordHasher().hash(self.account["password"]),
         )
@@ -109,10 +108,11 @@ class LoginTests(unittest.TestCase):
             jwt.decode(token, secrets.token_urlsafe(48), algorithms=["HS256"])
         self.assert_session_released_without_writes()
 
-    def test_username_login_and_identifier_whitespace(self):
-        self.assertEqual(self.login(identifier=f"  {self.account['username']}  ").status_code, 200)
+    def test_email_login_and_identifier_whitespace(self):
+        self.assertEqual(self.login(identifier=f"  {self.account['email']}  ").status_code, 200)
         statement = self.db.scalar.call_args.args[0]
-        self.assertEqual(set(statement.compile().params.values()), {self.account["username"]})
+        self.assertEqual(set(statement.compile().params.values()), {self.account["email"]})
+        self.assertEqual(str(statement.whereclause), "users.email = :email_1")
         self.assert_session_released_without_writes()
 
     def test_incorrect_password(self):
@@ -230,7 +230,6 @@ class PostgreSQLLoginTests(unittest.TestCase):
         self.stack.callback(event.remove, self.connection, "before_cursor_execute", capture)
         for identifier, password, expected in (
             (self.account["email"], self.account["password"], 200),
-            (self.account["username"], self.account["password"], 200),
             (self.account["email"], "Incorrect-password!", 401),
             (f"missing-{uuid4().hex}", self.account["password"], 401),
             (self.account["email"], self.account["password"], 200),
@@ -253,19 +252,15 @@ class PostgreSQLLoginTests(unittest.TestCase):
         ).one()
         self.assertEqual(snapshot, after)
 
-    def test_current_identifier_lookup_can_match_two_accounts(self):
+    def test_email_lookup_selects_only_the_requested_account(self):
         second = test_account()
-        second["username"] = self.account["email"]
         response = self.registration_client.post("/users/register", json=second)
         self.assertEqual(response.status_code, 201)
-        matches = self.connection.scalars(select(User.id).where(or_(
-            User.email == self.account["email"], User.username == self.account["email"]
-        ))).all()
-        self.assertEqual(set(matches), {self.user_id, response.json()["id"]})
         with Session(bind=self.connection, join_transaction_mode="create_savepoint") as db:
-            selected = UserRepository(db).get_by_identifier(self.account["email"])
-            # scalar() silently picks one account; the identifier is ambiguous.
-            self.assertIn(selected.id, matches)
+            repository = UserRepository(db)
+            self.assertEqual(repository.get_by_identifier(self.account["email"]).id, self.user_id)
+            self.assertEqual(repository.get_by_identifier(second["email"]).id, response.json()["id"])
+            self.assertIsNone(repository.get_by_identifier("missing-account"))
 
 
 if __name__ == "__main__":

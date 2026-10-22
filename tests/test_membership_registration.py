@@ -49,7 +49,6 @@ class MembershipRegistrationContract:
         self.addCleanup(self.stack.close)
         self.payload = {
             "email": f"membership-{uuid4().hex}@example.com",
-            "username": f"membership_{uuid4().hex}",
             "password": "Membership-password-123!",
             "first_name": "Test", "last_name": "Member",
             "phone": "+51987654321", "birth_date": "2000-01-02",
@@ -141,6 +140,7 @@ class MembershipRegistrationContract:
         self.assertEqual(len(body["memberships"]), 3)
         self.assertNotIn("password", body)
         self.assertNotIn("password_hash", body)
+        self.assertNotIn("username", body)
         with self.session_factory() as db:
             user = db.get(User, body["id"])
             self.assertTrue(PasswordHash.recommended().verify(self.payload["password"], user.password_hash))
