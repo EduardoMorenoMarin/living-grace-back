@@ -44,3 +44,11 @@ class ProfilePersistenceError(Exception):
 
 class ProfileUserUnavailable(Exception):
     pass
+
+
+class MembershipNotFound(Exception):
+    pass
+
+
+class MembershipTransitionConflict(Exception):
+    pass

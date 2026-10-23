@@ -137,7 +137,7 @@ class MembershipRuleExtensionContract:
         })
         self.assertEqual(response.status_code, 201, response.text)
         membership = response.json()["memberships"][0]
-        self.assertEqual(membership["status"], "PENDING")
+        self.assertEqual(membership["status"], "ACTIVE")
         self.assertEqual(membership["function_ids"], self.selection()["function_ids"])
         with self.session_factory() as db:
             stored = db.get(MinistryMember, membership["id"])
