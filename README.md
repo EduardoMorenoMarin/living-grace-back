@@ -548,3 +548,40 @@ Local workflow coverage:
 These commands use isolated local fixtures by default. PostgreSQL integration tests
 remain opt-in; do not enable them against Supabase automatically. PostgreSQL row-lock
 behavior is not exercised by the SQLite membership tests.
+
+### Create a rehearsal attendance QR session
+
+`POST /rehearsals/{rehearsal_id}/qr-sessions` accepts only `opens_at` and
+`expires_at`, both timezone-aware ISO timestamps. It returns 201 with `id`,
+`rehearsal_id`, `check_in_url`, and the two timestamps normalized to UTC.
+`FRONTEND_ORIGIN` configures the frontend base URL; the link appends
+`/check-in?token=...`. The frontend renders the QR image.
+
+Authorization follows existing rehearsal administration: a current GLOBAL ADMIN
+role plus active membership in the rehearsal's active ministry. Being the creator
+or having only a ministry-scoped role grants no additional access. Unauthorized
+roles receive 403; missing or inaccessible rehearsals receive 404. Invalid windows
+receive 422, existing non-revoked sessions receive 409, and persistence failures
+receive a sanitized 500. An already-open window is allowed if its expiration is
+still in the future; no additional relationship to rehearsal start/end is imposed.
+
+The implementation maps the existing `rehearsal_qr_sessions` table and runs no
+DDL or migrations. A rehearsal row lock serializes creation, and the existing
+partial unique index remains the final guard against concurrent writers. Expired
+but non-revoked rows still block creation, matching that index.
+
+Tokens use `secrets.token_urlsafe(32)` (256 random bits). Only their SHA-256 hashes
+are persisted. The successful creation response is the only opportunity to obtain
+the original token, and is marked `Cache-Control: no-store`. Application code does
+not log it; deployment response-body logging should also exclude this response.
+
+A future GET endpoint should return session metadata only, omitting the check-in
+URL. The administrator's frontend must retain the creation URL for redisplay. If
+it is lost, a future explicit revoke-and-create flow can issue a replacement;
+there is no way to reconstruct the token from its hash. No plaintext column,
+encryption, retrieval, revocation, or attendance check-in endpoint is added here.
+
+Run the isolated QR contracts with:
+` .venv/bin/python -m unittest discover -s tests -p 'test_rehearsal_qr_session.py' `.
+The tests exercise the real unique index after a simulated lost precheck race;
+SQLite does not verify PostgreSQL row-lock scheduling.
