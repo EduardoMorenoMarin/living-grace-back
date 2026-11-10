@@ -575,11 +575,10 @@ are persisted. The successful creation response is the only opportunity to obtai
 the original token, and is marked `Cache-Control: no-store`. Application code does
 not log it; deployment response-body logging should also exclude this response.
 
-A future GET endpoint should return session metadata only, omitting the check-in
-URL. The administrator's frontend must retain the creation URL for redisplay. If
-it is lost, a future explicit revoke-and-create flow can issue a replacement;
-there is no way to reconstruct the token from its hash. No plaintext column,
-encryption, retrieval, revocation, or attendance check-in endpoint is added here.
+The GET endpoint returns session metadata only, omitting the check-in URL. The
+administrator's frontend must retain the creation URL for redisplay. If it is lost,
+explicitly revoke the session and create a replacement; there is no way to
+reconstruct the token from its hash. No plaintext column or encryption is used.
 
 Run the isolated QR contracts with:
 ` .venv/bin/python -m unittest discover -s tests -p 'test_rehearsal_qr_session.py' `.
@@ -622,3 +621,45 @@ configuration enables real concurrent insert, ABSENT-update, revocation-wait,
 and expiration-wait tests. Without it those tests are skipped; SQLite contracts
 cover validation, SQL constraint fallback and rollback across expiration but do
 not demonstrate PostgreSQL lock scheduling.
+
+
+### Retrieve or revoke the rehearsal QR session
+
+Both endpoints require the same current GLOBAL ADMIN role and active membership
+in the rehearsal's active ministry as QR creation. Rehearsal ownership alone is
+insufficient. Missing/invalid JWTs return 401, insufficient global privileges
+return 403, and missing or inaccessible rehearsals return 404.
+
+`GET /rehearsals/{rehearsal_id}/qr-sessions/active` returns 200 with only `id`,
+`rehearsal_id`, `opens_at`, `expires_at`, and `created_at`. Timestamps are UTC.
+The session must be non-revoked and satisfy `opens_at <= server_now < expires_at`;
+missing, scheduled, expired and revoked sessions return 404. GET performs only
+reads, does not lock rows or update records, and uses `Cache-Control: no-store`.
+Metadata reflects committed state at the time of the read; a concurrent revoke
+may commit immediately afterward. The check-in endpoint always revalidates.
+
+`DELETE /rehearsals/{rehearsal_id}/qr-sessions/active` sets the non-revoked
+session's `revoked_at` to current UTC and returns 204 with no body. It also allows
+revoking scheduled or expired sessions, freeing the unique non-revoked slot for
+replacement creation. It preserves the row and returns 404 if no revocable
+session exists, including repeated revocation with no intervening replacement.
+Read or persistence failures return sanitized 500 responses.
+
+Revocation locks the rehearsal then its non-revoked QR row, refreshing state
+after waits and holding locks until commit. This matches creation/check-in lock
+ordering. Two revocations of the same session yield one success and one 404;
+creation after a completed revoke can issue a new token. A check-in that waits
+behind revocation sees the committed revocation and rejects the old token. A
+check-in that acquires the locks first may complete before revocation takes
+effect. DELETE targets the non-revoked session when it acquires the locks; a
+replacement created before that point can therefore be the session revoked.
+
+No token or token hash appears in GET responses, and the metadata query does not
+select the hash. Raw URLs remain available only in successful creation responses.
+No schema changes or token reconstruction are introduced.
+
+Run ` .venv/bin/python -m unittest discover -s tests -p 'test_rehearsal_qr_management.py' `.
+The existing opt-in scratch PostgreSQL setting enables tests for concurrent
+revocations, replacement creation waiting behind revocation, check-in waiting
+behind revocation, and metadata reads during revocation. These tests are skipped
+without `REHEARSAL_CONCURRENCY_DATABASE_URL`.

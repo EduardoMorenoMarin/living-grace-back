@@ -58,6 +58,10 @@ class AttendanceSessionInvalid(Exception):
     pass
 
 
+class RehearsalQrSessionNotFound(Exception):
+    pass
+
+
 class AttendanceCheckInForbidden(Exception):
     pass
 

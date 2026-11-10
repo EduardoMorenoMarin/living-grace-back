@@ -27,3 +27,16 @@ class RehearsalQrSessionResponse(BaseModel):
     check_in_url: str
     opens_at: AwareDatetime
     expires_at: AwareDatetime
+
+
+class RehearsalQrSessionMetadata(BaseModel):
+    id: int
+    rehearsal_id: int
+    opens_at: AwareDatetime
+    expires_at: AwareDatetime
+    created_at: AwareDatetime
+
+    @field_validator("opens_at", "expires_at", "created_at")
+    @classmethod
+    def normalize_utc(cls, value):
+        return value.astimezone(timezone.utc)

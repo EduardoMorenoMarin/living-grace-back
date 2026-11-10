@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -20,6 +21,27 @@ class RehearsalQrSessionRepository:
 
     def add(self, session: RehearsalQrSession) -> None:
         self.db.add(session)
+        self.db.flush()
+
+    def get_active_metadata(self, rehearsal_id: int, now: datetime):
+        return self.db.execute(select(
+            RehearsalQrSession.id, RehearsalQrSession.rehearsal_id,
+            RehearsalQrSession.opens_at, RehearsalQrSession.expires_at,
+            RehearsalQrSession.created_at,
+        ).where(
+            RehearsalQrSession.rehearsal_id == rehearsal_id,
+            RehearsalQrSession.revoked_at.is_(None),
+            RehearsalQrSession.opens_at <= now, RehearsalQrSession.expires_at > now,
+        )).mappings().one_or_none()
+
+    def get_non_revoked_for_update(self, rehearsal_id: int) -> RehearsalQrSession | None:
+        return self.db.scalar(select(RehearsalQrSession).where(
+            RehearsalQrSession.rehearsal_id == rehearsal_id,
+            RehearsalQrSession.revoked_at.is_(None),
+        ).with_for_update().execution_options(populate_existing=True))
+
+    def revoke(self, session: RehearsalQrSession, now: datetime) -> None:
+        session.revoked_at = now
         self.db.flush()
 
     @contextmanager
