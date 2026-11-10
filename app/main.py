@@ -7,6 +7,7 @@ from app.api.routes.auth import router as auth_router
 from app.api.routes.users import router as users_router
 from app.api.routes.ministries import router as ministries_router
 from app.api.routes.rehearsals import router as rehearsals_router
+from app.api.routes.attendance import router as attendance_router
 from app.core.config import settings
 
 
@@ -21,6 +22,7 @@ app.include_router(users_router)
 app.include_router(auth_router)
 app.include_router(ministries_router)
 app.include_router(rehearsals_router)
+app.include_router(attendance_router)
 
 
 @app.exception_handler(RequestValidationError)

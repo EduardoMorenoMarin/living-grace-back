@@ -585,3 +585,40 @@ Run the isolated QR contracts with:
 ` .venv/bin/python -m unittest discover -s tests -p 'test_rehearsal_qr_session.py' `.
 The tests exercise the real unique index after a simulated lost precheck race;
 SQLite does not verify PostgreSQL row-lock scheduling.
+
+### QR attendance check-in
+
+`POST /attendance/check-in` requires a JWT and a body containing only
+`{"token": "QR_TOKEN"}`. Identity comes from the JWT, and timestamps/statuses
+are determined by the server. No administrative role is required: the current
+user and rehearsal ministry must be active and not deleted, and the user must
+have active, non-deleted membership in that ministry.
+
+The response contains `rehearsal_id`, `attendance_status`, and UTC `arrival_at`.
+New attendance rows return 201; updates to existing NULL or ABSENT placeholders
+return 200. A recorded arrival or an ON_TIME, LATE, or JUSTIFIED status returns
+409 without modifying the row. ON_TIME includes the exact boundary
+`start_at + tolerance_minutes`; later arrivals are LATE.
+
+The endpoint hashes the submitted token with SHA-256. Unknown, revoked,
+not-yet-open, expired, or missing-rehearsal sessions return the same generic 400.
+The validity window is `opens_at <= server_now < expires_at`. Ineligible users
+or ministries return 403, invalid/missing JWTs return 401, malformed bodies
+return 422, and database failures return a sanitized 500. Responses do not echo
+tokens, and the request schema uses a secret value to redact representations.
+Deployments must exclude request bodies from access/trace logging for this route.
+
+Transactions lock the rehearsal before the QR row, then the ministry, user,
+membership and attendance. These locks refresh database state after waits and
+prevent revocation or eligibility changes during recording. Time is sampled
+after all lock waits and checked again after the write, with rollback if the
+session expired during recording. Rehearsal locking serializes check-ins for a
+rehearsal; the existing attendance pair unique constraint also guards competing
+inserts by other writers. No database schema changes are needed.
+
+Run ` .venv/bin/python -m unittest discover -s tests -p 'test_attendance_check_in.py' `.
+The existing opt-in `REHEARSAL_CONCURRENCY_DATABASE_URL` scratch PostgreSQL
+configuration enables real concurrent insert, ABSENT-update, revocation-wait,
+and expiration-wait tests. Without it those tests are skipped; SQLite contracts
+cover validation, SQL constraint fallback and rollback across expiration but do
+not demonstrate PostgreSQL lock scheduling.

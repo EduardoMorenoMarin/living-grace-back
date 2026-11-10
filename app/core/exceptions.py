@@ -52,3 +52,15 @@ class MembershipNotFound(Exception):
 
 class MembershipTransitionConflict(Exception):
     pass
+
+
+class AttendanceSessionInvalid(Exception):
+    pass
+
+
+class AttendanceCheckInForbidden(Exception):
+    pass
+
+
+class AttendanceCheckInPersistenceError(Exception):
+    pass
