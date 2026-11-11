@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, st
 
 from app.core.exceptions import RehearsalNotFound, RehearsalReadError
 from app.dependencies.rehearsal_read import get_rehearsal_read_service, get_rehearsal_viewer
-from app.schemas.rehearsal_read import AdminRehearsalDetail, AdminRehearsalPage, RehearsalInfo, RehearsalPage
+from app.schemas.rehearsal_read import AdminRehearsalDetail, AdminRehearsalPage, MemberRehearsalDetail, RehearsalPage
 from app.services.rehearsal_read import RehearsalReadService, RehearsalViewer
 
 from app.core.exceptions import MinistryNotFound, RehearsalPersistenceError, RehearsalValidationError
@@ -138,12 +138,12 @@ def list_rehearsals(
         raise HTTPException(status_code=500, detail="Unable to retrieve rehearsals.") from None
 
 
-@router.get("/{rehearsal_id}", response_model=AdminRehearsalDetail | RehearsalInfo)
+@router.get("/{rehearsal_id}", response_model=AdminRehearsalDetail | MemberRehearsalDetail)
 def get_rehearsal(
     rehearsal_id: Annotated[int, Path(gt=0, le=9223372036854775807)],
     viewer: Annotated[RehearsalViewer, Depends(get_rehearsal_viewer)],
     service: Annotated[RehearsalReadService, Depends(get_rehearsal_read_service)],
-) -> AdminRehearsalDetail | RehearsalInfo:
+) -> AdminRehearsalDetail | MemberRehearsalDetail:
     try:
         return service.get_visible(viewer, rehearsal_id)
     except RehearsalNotFound:

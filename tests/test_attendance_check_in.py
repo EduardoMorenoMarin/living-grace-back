@@ -55,6 +55,33 @@ class AttendanceCheckInTests(unittest.TestCase):
             RehearsalAttendance.ministry_member_id == member_id,
         ))
 
+    def test_member_reads_reflect_created_and_updated_check_in(self):
+        self.login(102)  # USER with active memberships in both ministries
+        self.change(RehearsalAttendance, 401, attendance_status=None, arrival_at=None)
+        for created, late in ((False, False), (True, True)):
+            with self.subTest(created=created, late=late):
+                if created:
+                    self.db.delete(self.db.get(RehearsalAttendance, 401))
+                    self.db.commit()
+                    self.change(Rehearsal, 301, start_at=self.now - timedelta(minutes=11))
+                    self.assertEqual(self.client.get("/rehearsals/301", headers=self.headers).status_code, 404)
+                else:
+                    before = self.client.get("/rehearsals/301", headers=self.headers).json()
+                    self.assertEqual(before["my_attendance"], {"attendance_status": None, "arrival_at": None})
+                response = self.check_in()
+                self.assertEqual(response.status_code, 201 if created else 200, response.text)
+                expected_status = "LATE" if late else "ON_TIME"
+                detail = self.client.get("/rehearsals/301", headers=self.headers)
+                self.assertEqual(detail.status_code, 200, detail.text)
+                personal = detail.json()["my_attendance"]
+                self.assertEqual(personal["attendance_status"], expected_status)
+                self.assertEqual(datetime.fromisoformat(personal["arrival_at"]), self.now.replace(tzinfo=None))
+                page = self.client.get("/rehearsals", headers=self.headers).json()
+                item = next(item for item in page["items"] if item["id"] == 301)
+                self.assertEqual({key: item[key] for key in personal}, personal)
+                self.assertNotIn("participants", detail.json())
+                self.assertNotIn("participant_count", item)
+
     def test_new_record_returns_201_and_expected_structure(self):
         self.login(101)  # active ministry member with no selected attendance row
         response = self.check_in()

@@ -31,6 +31,19 @@ class RehearsalInfo(BaseModel):
     created_by: RehearsalCreatorInfo
 
 
+class MyRehearsalAttendance(BaseModel):
+    attendance_status: AttendanceStatus | None
+    arrival_at: datetime | None
+
+
+class MemberRehearsalItem(RehearsalInfo, MyRehearsalAttendance):
+    pass
+
+
+class MemberRehearsalDetail(RehearsalInfo):
+    my_attendance: MyRehearsalAttendance
+
+
 class AdminRehearsalItem(RehearsalInfo):
     participant_count: int
 
@@ -50,7 +63,7 @@ class AdminRehearsalDetail(RehearsalInfo):
 
 
 class RehearsalPage(BaseModel):
-    items: list[RehearsalInfo]
+    items: list[MemberRehearsalItem]
     total: int
 
 
