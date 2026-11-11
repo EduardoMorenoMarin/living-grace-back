@@ -88,3 +88,7 @@ class PasswordResetUserNotFound(Exception):
 
 class PasswordResetUserIneligible(Exception):
     pass
+
+
+class DashboardReadError(Exception):
+    pass

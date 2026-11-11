@@ -699,3 +699,51 @@ Temporary passwords have no separate expiry; another reset replaces them.
 `tests/test_reset_password.py` covers reset authorization and eligibility,
 temporary login, forced-change restrictions, token invalidation, and transaction
 rollback. Run `.venv/bin/python -m unittest discover -s tests` for regressions.
+
+### Personal member dashboard
+
+`GET /dashboard/me` uses the existing JWT authentication and global USER/ADMIN
+eligibility checks. Mandatory password changes block access with 403. Global
+admins receive only their own participant assignments and attendance here.
+
+Optional `ministry_id` limits attendance and rehearsal sections to an active,
+nondeleted membership in an active, nondeleted ministry. An unavailable or
+unrelated ministry returns 404; malformed IDs return 422. The profile continues
+to list all eligible active memberships and their active, unrevoked functions.
+
+The response contains `selected_ministry_id`, `profile`, `monthly_attendance`,
+`recent_attendance`, `next_rehearsal`, and `upcoming_rehearsals`. See
+`app/schemas/dashboard.py` for the full response contract.
+
+Configure `APP_TIMEZONE` with an IANA timezone name (default `America/Lima`);
+invalid names fail settings validation. The summary always covers the current
+calendar month in that timezone, based on rehearsal `start_at`. Boundaries are
+converted to UTC for database comparisons. Completed means `end_at <= now`.
+The total includes all completed assigned rehearsals in the month, including
+JUSTIFIED and unresolved results; unresolved means a NULL attendance status,
+regardless of arrival time. NULL never implies ABSENT.
+
+Attendance rate is `(ON_TIME + LATE) / (ON_TIME + LATE + ABSENT) * 100`.
+Punctuality rate is `ON_TIME / (ON_TIME + LATE) * 100`. JUSTIFIED and unresolved
+results contribute to neither denominator. Rates are rounded to two decimals
+and return null for an empty denominator.
+
+Recent activity contains at most five completed rehearsals with non-NULL
+statuses across all dates, ordered by start time and ID descending.
+`rehearsal_date` is the rehearsal start date in `APP_TIMEZONE`. Upcoming contains
+at most five assignments with `start_at >= now`, ordered by start time and ID
+ascending. Ongoing rehearsals are excluded. `next_rehearsal` equals the first
+upcoming card, or null; lists are empty when no results qualify.
+
+The repository reuses personal rehearsal visibility and SQL metadata queries,
+uses SQL aggregation for counts, and bounds both history and upcoming queries.
+The normal request uses six SELECTs including JWT user lookup and authorization;
+query count does not grow with attendance history. No database schema changes
+are needed. Attendance rows remain the existing representation of participant
+assignments, including rows created by QR check-in; no separate preassignment
+provenance is available. Historical results from inactive memberships or
+ministries are excluded consistently with rehearsal visibility.
+
+Run `.venv/bin/python -m unittest discover -s tests -p test_dashboard.py -v`
+for dashboard contracts and `.venv/bin/python -m unittest discover -s tests`
+for the regression suite.
