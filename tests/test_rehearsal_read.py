@@ -114,7 +114,7 @@ class RehearsalReadTests(unittest.TestCase):
         self.login(101)
 
     def login(self, user_id):
-        self.headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(user_id)}"}
+        self.headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(user_id, self.db.get(User, user_id).password_hash)}"}
 
     def get(self, rehearsal_id=None, **params):
         path = "/rehearsals" if rehearsal_id is None else f"/rehearsals/{rehearsal_id}"
@@ -343,7 +343,7 @@ class RehearsalReadTests(unittest.TestCase):
             headers = {} if token is None else {"Authorization": f"Bearer {token}"}
             for path in ("/rehearsals", "/rehearsals/301"):
                 self.assertEqual(self.client.get(path, headers=headers).status_code, 401)
-        token = jwt.encode({"sub": "102", "exp": 9999999999, "role": "ADMIN", "user_id": 101}, key, algorithm=settings.JWT_ALGORITHM)
+        token = jwt.encode({"sub": "102", "exp": 9999999999, "role": "ADMIN", "user_id": 101, "pwdv": TokenService(settings).credential_version(102, self.db.get(User, 102).password_hash)}, key, algorithm=settings.JWT_ALGORITHM)
         self.headers = {"Authorization": f"Bearer {token}"}
         self.assertEqual(self.ids(), [301, 302])
         self.assertNotIn("participants", self.get(301).json())

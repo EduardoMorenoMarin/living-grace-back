@@ -56,6 +56,7 @@ class RehearsalContract:
             db.add_all([user, ministry])
             db.flush()
             self.user_id, self.ministry_id = user.id, ministry.id
+            self.password_hash = user.password_hash
             if db.get_bind().dialect.name == "sqlite":
                 db.add_all([
                     Role(id=17, name="ADMIN", scope=RoleScope.GLOBAL,
@@ -105,7 +106,7 @@ class RehearsalContract:
 
             stack.enter_context(patch.dict(app.dependency_overrides, {get_rehearsal_creator: creator}))
         self.client = stack.enter_context(TestClient(app))
-        self.headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(self.user_id)}"}
+        self.headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(self.user_id, self.password_hash)}"}
         self.payload = {
             "ministry_id": self.ministry_id, "name": "Worship Team Rehearsal",
             "start_at": "2026-10-03T19:00:00-05:00", "end_at": "2026-10-03T21:00:00-05:00",
@@ -255,7 +256,7 @@ class RehearsalContract:
             jwt.encode({"sub": str(self.user_id), "exp": 1}, key, algorithm=algorithm),
             jwt.encode({"sub": str(self.user_id)}, key, algorithm=algorithm),
             jwt.encode({"sub": "not-an-id", "exp": 9999999999}, key, algorithm=algorithm),
-            TokenService(settings).create_access_token(9223372036854775807),
+            TokenService(settings).create_access_token(9223372036854775807, "unused"),
             jwt.encode({"sub": str(self.user_id), "exp": 9999999999}, secrets.token_urlsafe(48), algorithm=algorithm),
         ]
         for token in tokens:
@@ -350,7 +351,7 @@ class SQLiteRehearsalTests(RehearsalContract, unittest.TestCase):
             db.delete(db.get(MinistryMemberRole, self.assignment_id))
             db.commit()
         token = jwt.encode(
-            {"sub": str(self.user_id), "exp": 9999999999, "role": "ADMIN", "roles": ["ADMIN"]},
+            {"sub": str(self.user_id), "exp": 9999999999, "role": "ADMIN", "roles": ["ADMIN"], "pwdv": TokenService(settings).credential_version(self.user_id, self.password_hash)},
             settings.JWT_SECRET_KEY.get_secret_value(), algorithm=settings.JWT_ALGORITHM,
         )
         self.headers = {"Authorization": f"Bearer {token}"}

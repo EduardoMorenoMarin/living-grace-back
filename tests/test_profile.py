@@ -54,7 +54,7 @@ class ProfileTests(unittest.TestCase):
         self.db.add_all([self.user, self.other])
         self.db.commit()
         self.user_id = self.user.id
-        self.headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(self.user_id)}"}
+        self.headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(self.user_id, self.user.password_hash)}"}
 
         def override_db():
             yield self.db

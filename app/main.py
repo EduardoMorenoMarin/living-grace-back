@@ -26,9 +26,13 @@ app.include_router(attendance_router)
 
 
 @app.middleware("http")
-async def password_change_no_store(request: Request, call_next):
+async def authentication_no_store(request: Request, call_next):
     response = await call_next(request)
-    if request.method == "POST" and request.url.path.rstrip("/") == "/auth/change-password":
+    path = request.url.path.rstrip("/")
+    if request.method == "POST" and (
+        path in {"/auth/login", "/auth/change-password"}
+        or (path.startswith("/users/") and path.endswith("/reset-password"))
+    ):
         response.headers["Cache-Control"] = "no-store"
     return response
 

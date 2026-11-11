@@ -8,7 +8,7 @@ from app.services.login import InvalidCredentials, LoginService
 from app.core.exceptions import (
     CurrentPasswordIncorrect, PasswordChangePersistenceError, PasswordChangeValidationError,
 )
-from app.dependencies.auth import get_current_user
+from app.dependencies.auth import get_authenticated_user
 from app.dependencies.change_password import get_change_password_service
 from app.models.user import User
 from app.schemas.auth import ChangePasswordRequest
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 def change_password(
     data: ChangePasswordRequest,
-    user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_authenticated_user)],
     service: Annotated[ChangePasswordService, Depends(get_change_password_service)],
 ) -> Response:
     try:

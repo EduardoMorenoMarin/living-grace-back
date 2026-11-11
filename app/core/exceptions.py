@@ -80,3 +80,11 @@ class AttendanceCheckInForbidden(Exception):
 
 class AttendanceCheckInPersistenceError(Exception):
     pass
+
+
+class PasswordResetUserNotFound(Exception):
+    pass
+
+
+class PasswordResetUserIneligible(Exception):
+    pass

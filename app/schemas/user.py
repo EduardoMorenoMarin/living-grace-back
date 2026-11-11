@@ -1,11 +1,16 @@
 from datetime import date, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints, field_validator
 
 from app.models.enums import UserStatus
 from app.schemas.membership import MembershipCreate, MembershipResponse
 from app.schemas.password import NewPassword
+
+
+class PasswordResetResponse(BaseModel):
+    temporary_password: str = Field(repr=False)
+    must_change_password: Literal[True] = True
 
 
 class UserCreate(BaseModel):

@@ -7,6 +7,7 @@ import test_rehearsal_read as fixtures
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.core.config import settings
+from app.services.token import TokenService
 from app.models import User
 from app.repositories.user import UserRepository
 from app.schemas.auth import ChangePasswordRequest
@@ -46,7 +47,8 @@ class ChangePasswordTests(unittest.TestCase):
 
     def test_success_changes_only_authenticated_user_and_login_credentials(self):
         # Forged identity/role claims cannot select another account.
-        token = jwt.encode({"sub": "102", "exp": 9999999999, "user_id": 101, "role": "ADMIN"},
+        token = jwt.encode({"sub": "102", "exp": 9999999999, "user_id": 101, "role": "ADMIN",
+                            "pwdv": TokenService(settings).credential_version(102, self.original_hash)},
                            settings.JWT_SECRET_KEY.get_secret_value(), algorithm=settings.JWT_ALGORITHM)
         self.headers = {"Authorization": f"Bearer {token}"}
         with self.assertNoLogs(level="WARNING"):
@@ -99,7 +101,7 @@ class ChangePasswordTests(unittest.TestCase):
     def test_missing_fields_extra_identity_and_malformed_body_are_safe(self):
         for body in ({}, {"current_password": self.old_password},
                      {"new_password": self.new_password},
-                     {"current_password": self.old_password, "new_password": self.new_password, "user_id": 101}):
+                     {"current_password": self.old_password, "new_password": self.new_password, "user_id": 101, "pwdv": TokenService(settings).credential_version(102, self.db.get(User, 102).password_hash)}):
             self.assert_sensitive_response(self.client.post("/auth/change-password", headers=self.headers, json=body), 422)
         malformed = self.client.post(
             "/auth/change-password", headers={**self.headers, "Content-Type": "application/json"},
@@ -134,6 +136,7 @@ class ChangePasswordTests(unittest.TestCase):
 
     def test_malformed_stored_hash_is_sanitized(self):
         self.change(User, 102, password_hash="invalid-private-hash")
+        self.login(102)
         with self.assertNoLogs(level="WARNING"):
             result = self.post()
         self.assert_sensitive_response(result, 500)

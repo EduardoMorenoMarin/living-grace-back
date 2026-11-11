@@ -84,8 +84,9 @@ class UserRepository:
             .execution_options(populate_existing=True)
         )
 
-    def set_password(self, user: User, password_hash: str) -> None:
+    def set_password(self, user: User, password_hash: str, *, must_change_password: bool = False) -> None:
         user.password_hash = password_hash
+        user.must_change_password = must_change_password
         self.db.flush()
 
     @contextmanager

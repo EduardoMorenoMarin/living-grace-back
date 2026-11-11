@@ -663,3 +663,39 @@ The existing opt-in scratch PostgreSQL setting enables tests for concurrent
 revocations, replacement creation waiting behind revocation, check-in waiting
 behind revocation, and metadata reads during revocation. These tests are skipped
 without `REHEARSAL_CONCURRENCY_DATABASE_URL`.
+
+### Admin-assisted password reset
+
+`POST /users/{user_id}/reset-password` requires the existing global ADMIN role.
+It returns HTTP 200 with `temporary_password` and `must_change_password: true`.
+The temporary password is generated with `secrets.token_urlsafe(24)` and returned
+only after the transaction commits; only its Argon2 hash is stored. Deleted or
+missing accounts return 404, inactive accounts return 409, and database failures
+return a sanitized 500 after rollback. The response uses `Cache-Control: no-store`.
+
+The User model maps the existing `users.must_change_password` boolean column.
+No migration is needed or supplied. Login now includes `must_change_password`
+alongside `access_token` and `token_type`. A user with this flag can log in and
+call `POST /auth/change-password`, using the temporary password as
+`current_password`. Other protected endpoints return 403 (`Password change
+required.`). A successful password change clears the flag and replaces the hash
+in the same transaction. Log in again afterward to obtain a new access token.
+Login and password-change responses also use `Cache-Control: no-store`.
+
+Access tokens now require a `pwdv` claim: an HMAC of the user ID and current
+password hash, keyed with the JWT signing secret and a credential-specific
+prefix. The database hash itself is never included in the token. Every
+JWT-authenticated request checks this claim against the current database value.
+Resetting or changing a password invalidates previously issued tokens, including
+temporary-password tokens after the final change. Tokens issued before this
+claim was introduced are rejected; deployment requires users to log in again.
+This replaces the previous behavior where tokens remained usable until expiry.
+
+There is no independent per-token revocation store. The password-bound claim
+revokes all tokens when the password hash changes. Requests that already passed
+authentication before a reset commits cannot be retroactively cancelled.
+Temporary passwords have no separate expiry; another reset replaces them.
+
+`tests/test_reset_password.py` covers reset authorization and eligibility,
+temporary login, forced-change restrictions, token invalidation, and transaction
+rollback. Run `.venv/bin/python -m unittest discover -s tests` for regressions.
