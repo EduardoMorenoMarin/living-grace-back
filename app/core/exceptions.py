@@ -2,6 +2,18 @@ class RegistrationConflict(Exception):
     pass
 
 
+class CurrentPasswordIncorrect(Exception):
+    pass
+
+
+class PasswordChangeValidationError(Exception):
+    pass
+
+
+class PasswordChangePersistenceError(Exception):
+    pass
+
+
 class RegistrationPersistenceError(Exception):
     pass
 

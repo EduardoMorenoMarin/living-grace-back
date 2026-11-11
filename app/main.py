@@ -25,6 +25,14 @@ app.include_router(rehearsals_router)
 app.include_router(attendance_router)
 
 
+@app.middleware("http")
+async def password_change_no_store(request: Request, call_next):
+    response = await call_next(request)
+    if request.method == "POST" and request.url.path.rstrip("/") == "/auth/change-password":
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.exception_handler(RequestValidationError)
 async def request_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
     # Default validation errors can echo a plaintext password or the whole body.

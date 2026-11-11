@@ -2,6 +2,15 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints
 
+from app.schemas.password import NewPassword
+
+
+class ChangePasswordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    current_password: SecretStr = Field(min_length=1, max_length=128)
+    new_password: NewPassword
+
 
 class LoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
