@@ -9,12 +9,13 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.dependencies.database import get_db
 from app.models.user import User
+from app.services.token import TokenService
 
 
 bearer = HTTPBearer(auto_error=False)
 
 
-def get_current_user(
+def get_authenticated_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
     db: Annotated[Session, Depends(get_db)],
 ) -> User:
@@ -27,7 +28,7 @@ def get_current_user(
     try:
         claims = jwt.decode(
             credentials.credentials, settings.JWT_SECRET_KEY.get_secret_value(),
-            algorithms=[settings.JWT_ALGORITHM], options={"require": ["sub", "exp"]},
+            algorithms=[settings.JWT_ALGORITHM], options={"require": ["sub", "exp", "pwdv"]},
         )
         user_id = int(claims["sub"])
         if not 0 < user_id <= 9223372036854775807:
@@ -38,6 +39,15 @@ def get_current_user(
         user = db.get(User, user_id)
     except SQLAlchemyError:
         raise HTTPException(status_code=500, detail="Unable to authenticate user.") from None
-    if user is None:
+    if user is None or not TokenService(settings).matches_credentials(
+        claims["pwdv"], user.id, user.password_hash,
+    ):
         raise unauthorized
+    return user
+
+
+def get_current_user(user: Annotated[User, Depends(get_authenticated_user)]) -> User:
+    """Business endpoints require completion of any mandatory password change."""
+    if user.must_change_password:
+        raise HTTPException(status_code=403, detail="Password change required.")
     return user

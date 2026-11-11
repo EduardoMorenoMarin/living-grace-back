@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import RegistrationConflict, RegistrationPersistenceError, RegistrationValidationError
+from app.core.exceptions import PasswordChangePersistenceError
 from app.core.database import engine
 from app.models.user import User
 
@@ -76,3 +77,27 @@ class UserRepository:
         return self.db.scalar(
             select(User).where(User.email == identifier)
         )
+
+    def get_for_password_change(self, user_id: int) -> User | None:
+        return self.db.scalar(
+            select(User).where(User.id == user_id).with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+    def set_password(self, user: User, password_hash: str, *, must_change_password: bool = False) -> None:
+        user.password_hash = password_hash
+        user.must_change_password = must_change_password
+        self.db.flush()
+
+    @contextmanager
+    def password_change_transaction(self) -> Iterator[None]:
+        try:
+            yield
+            self.db.commit()
+        except SQLAlchemyError:
+            # SQL errors can contain the new hash in their bound parameters.
+            self.db.rollback()
+            raise PasswordChangePersistenceError from None
+        except Exception:
+            self.db.rollback()
+            raise

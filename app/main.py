@@ -7,6 +7,8 @@ from app.api.routes.auth import router as auth_router
 from app.api.routes.users import router as users_router
 from app.api.routes.ministries import router as ministries_router
 from app.api.routes.rehearsals import router as rehearsals_router
+from app.api.routes.attendance import router as attendance_router
+from app.api.routes.dashboard import router as dashboard_router
 from app.core.config import settings
 
 
@@ -21,6 +23,20 @@ app.include_router(users_router)
 app.include_router(auth_router)
 app.include_router(ministries_router)
 app.include_router(rehearsals_router)
+app.include_router(attendance_router)
+app.include_router(dashboard_router)
+
+
+@app.middleware("http")
+async def authentication_no_store(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path.rstrip("/")
+    if request.method == "POST" and (
+        path in {"/auth/login", "/auth/change-password"}
+        or (path.startswith("/users/") and path.endswith("/reset-password"))
+    ):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.exception_handler(RequestValidationError)

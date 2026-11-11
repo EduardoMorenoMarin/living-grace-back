@@ -28,4 +28,7 @@ class LoginService:
         ):
             raise InvalidCredentials("Invalid credentials.")
 
-        return TokenResponse(access_token=self.token_service.create_access_token(user.id))
+        return TokenResponse(
+            access_token=self.token_service.create_access_token(user.id, user.password_hash),
+            must_change_password=bool(user.must_change_password),
+        )

@@ -548,3 +548,202 @@ Local workflow coverage:
 These commands use isolated local fixtures by default. PostgreSQL integration tests
 remain opt-in; do not enable them against Supabase automatically. PostgreSQL row-lock
 behavior is not exercised by the SQLite membership tests.
+
+### Create a rehearsal attendance QR session
+
+`POST /rehearsals/{rehearsal_id}/qr-sessions` accepts only `opens_at` and
+`expires_at`, both timezone-aware ISO timestamps. It returns 201 with `id`,
+`rehearsal_id`, `check_in_url`, and the two timestamps normalized to UTC.
+`FRONTEND_ORIGIN` configures the frontend base URL; the link appends
+`/check-in?token=...`. The frontend renders the QR image.
+
+Authorization follows existing rehearsal administration: a current GLOBAL ADMIN
+role plus active membership in the rehearsal's active ministry. Being the creator
+or having only a ministry-scoped role grants no additional access. Unauthorized
+roles receive 403; missing or inaccessible rehearsals receive 404. Invalid windows
+receive 422, existing non-revoked sessions receive 409, and persistence failures
+receive a sanitized 500. An already-open window is allowed if its expiration is
+still in the future; no additional relationship to rehearsal start/end is imposed.
+
+The implementation maps the existing `rehearsal_qr_sessions` table and runs no
+DDL or migrations. A rehearsal row lock serializes creation, and the existing
+partial unique index remains the final guard against concurrent writers. Expired
+but non-revoked rows still block creation, matching that index.
+
+Tokens use `secrets.token_urlsafe(32)` (256 random bits). Only their SHA-256 hashes
+are persisted. The successful creation response is the only opportunity to obtain
+the original token, and is marked `Cache-Control: no-store`. Application code does
+not log it; deployment response-body logging should also exclude this response.
+
+The GET endpoint returns session metadata only, omitting the check-in URL. The
+administrator's frontend must retain the creation URL for redisplay. If it is lost,
+explicitly revoke the session and create a replacement; there is no way to
+reconstruct the token from its hash. No plaintext column or encryption is used.
+
+Run the isolated QR contracts with:
+` .venv/bin/python -m unittest discover -s tests -p 'test_rehearsal_qr_session.py' `.
+The tests exercise the real unique index after a simulated lost precheck race;
+SQLite does not verify PostgreSQL row-lock scheduling.
+
+### QR attendance check-in
+
+`POST /attendance/check-in` requires a JWT and a body containing only
+`{"token": "QR_TOKEN"}`. Identity comes from the JWT, and timestamps/statuses
+are determined by the server. No administrative role is required: the current
+user and rehearsal ministry must be active and not deleted, and the user must
+have active, non-deleted membership in that ministry.
+
+The response contains `rehearsal_id`, `attendance_status`, and UTC `arrival_at`.
+New attendance rows return 201; updates to existing NULL or ABSENT placeholders
+return 200. A recorded arrival or an ON_TIME, LATE, or JUSTIFIED status returns
+409 without modifying the row. ON_TIME includes the exact boundary
+`start_at + tolerance_minutes`; later arrivals are LATE.
+
+The endpoint hashes the submitted token with SHA-256. Unknown, revoked,
+not-yet-open, expired, or missing-rehearsal sessions return the same generic 400.
+The validity window is `opens_at <= server_now < expires_at`. Ineligible users
+or ministries return 403, invalid/missing JWTs return 401, malformed bodies
+return 422, and database failures return a sanitized 500. Responses do not echo
+tokens, and the request schema uses a secret value to redact representations.
+Deployments must exclude request bodies from access/trace logging for this route.
+
+Transactions lock the rehearsal before the QR row, then the ministry, user,
+membership and attendance. These locks refresh database state after waits and
+prevent revocation or eligibility changes during recording. Time is sampled
+after all lock waits and checked again after the write, with rollback if the
+session expired during recording. Rehearsal locking serializes check-ins for a
+rehearsal; the existing attendance pair unique constraint also guards competing
+inserts by other writers. No database schema changes are needed.
+
+Run ` .venv/bin/python -m unittest discover -s tests -p 'test_attendance_check_in.py' `.
+The existing opt-in `REHEARSAL_CONCURRENCY_DATABASE_URL` scratch PostgreSQL
+configuration enables real concurrent insert, ABSENT-update, revocation-wait,
+and expiration-wait tests. Without it those tests are skipped; SQLite contracts
+cover validation, SQL constraint fallback and rollback across expiration but do
+not demonstrate PostgreSQL lock scheduling.
+
+
+### Retrieve or revoke the rehearsal QR session
+
+Both endpoints require the same current GLOBAL ADMIN role and active membership
+in the rehearsal's active ministry as QR creation. Rehearsal ownership alone is
+insufficient. Missing/invalid JWTs return 401, insufficient global privileges
+return 403, and missing or inaccessible rehearsals return 404.
+
+`GET /rehearsals/{rehearsal_id}/qr-sessions/active` returns 200 with only `id`,
+`rehearsal_id`, `opens_at`, `expires_at`, and `created_at`. Timestamps are UTC.
+The session must be non-revoked and satisfy `opens_at <= server_now < expires_at`;
+missing, scheduled, expired and revoked sessions return 404. GET performs only
+reads, does not lock rows or update records, and uses `Cache-Control: no-store`.
+Metadata reflects committed state at the time of the read; a concurrent revoke
+may commit immediately afterward. The check-in endpoint always revalidates.
+
+`DELETE /rehearsals/{rehearsal_id}/qr-sessions/active` sets the non-revoked
+session's `revoked_at` to current UTC and returns 204 with no body. It also allows
+revoking scheduled or expired sessions, freeing the unique non-revoked slot for
+replacement creation. It preserves the row and returns 404 if no revocable
+session exists, including repeated revocation with no intervening replacement.
+Read or persistence failures return sanitized 500 responses.
+
+Revocation locks the rehearsal then its non-revoked QR row, refreshing state
+after waits and holding locks until commit. This matches creation/check-in lock
+ordering. Two revocations of the same session yield one success and one 404;
+creation after a completed revoke can issue a new token. A check-in that waits
+behind revocation sees the committed revocation and rejects the old token. A
+check-in that acquires the locks first may complete before revocation takes
+effect. DELETE targets the non-revoked session when it acquires the locks; a
+replacement created before that point can therefore be the session revoked.
+
+No token or token hash appears in GET responses, and the metadata query does not
+select the hash. Raw URLs remain available only in successful creation responses.
+No schema changes or token reconstruction are introduced.
+
+Run ` .venv/bin/python -m unittest discover -s tests -p 'test_rehearsal_qr_management.py' `.
+The existing opt-in scratch PostgreSQL setting enables tests for concurrent
+revocations, replacement creation waiting behind revocation, check-in waiting
+behind revocation, and metadata reads during revocation. These tests are skipped
+without `REHEARSAL_CONCURRENCY_DATABASE_URL`.
+
+### Admin-assisted password reset
+
+`POST /users/{user_id}/reset-password` requires the existing global ADMIN role.
+It returns HTTP 200 with `temporary_password` and `must_change_password: true`.
+The temporary password is generated with `secrets.token_urlsafe(24)` and returned
+only after the transaction commits; only its Argon2 hash is stored. Deleted or
+missing accounts return 404, inactive accounts return 409, and database failures
+return a sanitized 500 after rollback. The response uses `Cache-Control: no-store`.
+
+The User model maps the existing `users.must_change_password` boolean column.
+No migration is needed or supplied. Login now includes `must_change_password`
+alongside `access_token` and `token_type`. A user with this flag can log in and
+call `POST /auth/change-password`, using the temporary password as
+`current_password`. Other protected endpoints return 403 (`Password change
+required.`). A successful password change clears the flag and replaces the hash
+in the same transaction. Log in again afterward to obtain a new access token.
+Login and password-change responses also use `Cache-Control: no-store`.
+
+Access tokens now require a `pwdv` claim: an HMAC of the user ID and current
+password hash, keyed with the JWT signing secret and a credential-specific
+prefix. The database hash itself is never included in the token. Every
+JWT-authenticated request checks this claim against the current database value.
+Resetting or changing a password invalidates previously issued tokens, including
+temporary-password tokens after the final change. Tokens issued before this
+claim was introduced are rejected; deployment requires users to log in again.
+This replaces the previous behavior where tokens remained usable until expiry.
+
+There is no independent per-token revocation store. The password-bound claim
+revokes all tokens when the password hash changes. Requests that already passed
+authentication before a reset commits cannot be retroactively cancelled.
+Temporary passwords have no separate expiry; another reset replaces them.
+
+`tests/test_reset_password.py` covers reset authorization and eligibility,
+temporary login, forced-change restrictions, token invalidation, and transaction
+rollback. Run `.venv/bin/python -m unittest discover -s tests` for regressions.
+
+### Personal member dashboard
+
+`GET /dashboard/me` uses the existing JWT authentication and global USER/ADMIN
+eligibility checks. Mandatory password changes block access with 403. Global
+admins receive only their own participant assignments and attendance here.
+
+Optional `ministry_id` limits attendance and rehearsal sections to an active,
+nondeleted membership in an active, nondeleted ministry. An unavailable or
+unrelated ministry returns 404; malformed IDs return 422. The profile continues
+to list all eligible active memberships and their active, unrevoked functions.
+
+The response contains `selected_ministry_id`, `profile`, `monthly_attendance`,
+`recent_attendance`, `next_rehearsal`, and `upcoming_rehearsals`. See
+`app/schemas/dashboard.py` for the full response contract.
+
+Configure `APP_TIMEZONE` with an IANA timezone name (default `America/Lima`);
+invalid names fail settings validation. The summary always covers the current
+calendar month in that timezone, based on rehearsal `start_at`. Boundaries are
+converted to UTC for database comparisons. Completed means `end_at <= now`.
+The total includes all completed assigned rehearsals in the month, including
+JUSTIFIED and unresolved results; unresolved means a NULL attendance status,
+regardless of arrival time. NULL never implies ABSENT.
+
+Attendance rate is `(ON_TIME + LATE) / (ON_TIME + LATE + ABSENT) * 100`.
+Punctuality rate is `ON_TIME / (ON_TIME + LATE) * 100`. JUSTIFIED and unresolved
+results contribute to neither denominator. Rates are rounded to two decimals
+and return null for an empty denominator.
+
+Recent activity contains at most five completed rehearsals with non-NULL
+statuses across all dates, ordered by start time and ID descending.
+`rehearsal_date` is the rehearsal start date in `APP_TIMEZONE`. Upcoming contains
+at most five assignments with `start_at >= now`, ordered by start time and ID
+ascending. Ongoing rehearsals are excluded. `next_rehearsal` equals the first
+upcoming card, or null; lists are empty when no results qualify.
+
+The repository reuses personal rehearsal visibility and SQL metadata queries,
+uses SQL aggregation for counts, and bounds both history and upcoming queries.
+The normal request uses six SELECTs including JWT user lookup and authorization;
+query count does not grow with attendance history. No database schema changes
+are needed. Attendance rows remain the existing representation of participant
+assignments, including rows created by QR check-in; no separate preassignment
+provenance is available. Historical results from inactive memberships or
+ministries are excluded consistently with rehearsal visibility.
+
+Run `.venv/bin/python -m unittest discover -s tests -p test_dashboard.py -v`
+for dashboard contracts and `.venv/bin/python -m unittest discover -s tests`
+for the regression suite.

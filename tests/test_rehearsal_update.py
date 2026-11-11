@@ -10,6 +10,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 
 import test_rehearsal_read as fixtures
 from app.core.config import settings
+from app.services.token import TokenService
 from app.models import Ministry, MinistryMember, MinistryMemberRole, Rehearsal, RehearsalAttendance, Role, User
 from app.models.enums import AttendanceStatus, MembershipStatus, MinistryStatus, RoleStatus, UserStatus
 from app.repositories.rehearsal import RehearsalRepository
@@ -122,7 +123,7 @@ class RehearsalUpdateTests(unittest.TestCase):
         for actor in (102, 104):
             self.login(actor)
             self.assertEqual(self.update(name="Unauthorized").status_code, 403)
-        token = jwt.encode({"sub": "102", "exp": 9999999999, "role": "ADMIN", "user_id": 101},
+        token = jwt.encode({"sub": "102", "exp": 9999999999, "role": "ADMIN", "user_id": 101, "pwdv": TokenService(settings).credential_version(102, self.db.get(User, 102).password_hash)},
                            settings.JWT_SECRET_KEY.get_secret_value(), algorithm=settings.JWT_ALGORITHM)
         self.headers = {"Authorization": f"Bearer {token}"}
         self.assertEqual(self.update(name="Unauthorized").status_code, 403)

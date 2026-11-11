@@ -34,7 +34,7 @@ class RehearsalReadRepository:
             ).where(RehearsalAttendance.rehearsal_id == Rehearsal.id)
         return and_(
             Ministry.status == MinistryStatus.ACTIVE, Ministry.deleted_at.is_(None),
-            membership.exists(),
+            membership.correlate(Rehearsal).exists(),
         )
 
     def _metadata(self):
@@ -47,6 +47,18 @@ class RehearsalReadRepository:
             User.last_name.label("creator_last_name"),
         ).join(Ministry, Ministry.id == Rehearsal.ministry_id).join(User, User.id == Rehearsal.created_by)
 
+    def _member_metadata(self, user_id: int):
+        # Unique membership and attendance constraints keep one row per rehearsal.
+        return self._metadata().join(MinistryMember, and_(
+            MinistryMember.ministry_id == Rehearsal.ministry_id,
+            MinistryMember.user_id == user_id,
+            MinistryMember.status == MembershipStatus.ACTIVE,
+            MinistryMember.deleted_at.is_(None),
+        )).join(RehearsalAttendance, and_(
+            RehearsalAttendance.rehearsal_id == Rehearsal.id,
+            RehearsalAttendance.ministry_member_id == MinistryMember.id,
+        )).add_columns(RehearsalAttendance.attendance_status, RehearsalAttendance.arrival_at)
+
     def list_visible(
         self, user_id: int, is_admin: bool, limit: int, offset: int, ministry_id: int | None,
     ) -> tuple[Sequence[RowMapping], int]:
@@ -57,7 +69,7 @@ class RehearsalReadRepository:
             select(func.count()).select_from(Rehearsal)
             .join(Ministry, Ministry.id == Rehearsal.ministry_id).where(visible)
         )
-        statement = self._metadata().where(visible)
+        statement = (self._metadata() if is_admin else self._member_metadata(user_id)).where(visible)
         if is_admin:
             count = select(func.count(RehearsalAttendance.id)).where(
                 RehearsalAttendance.rehearsal_id == Rehearsal.id,
@@ -67,7 +79,8 @@ class RehearsalReadRepository:
         return rows.mappings().all(), total or 0
 
     def get_visible(self, user_id: int, is_admin: bool, rehearsal_id: int) -> RowMapping | None:
-        return self.db.execute(self._metadata().where(
+        statement = self._metadata() if is_admin else self._member_metadata(user_id)
+        return self.db.execute(statement.where(
             Rehearsal.id == rehearsal_id, self._visibility(user_id, is_admin),
         )).mappings().one_or_none()
 

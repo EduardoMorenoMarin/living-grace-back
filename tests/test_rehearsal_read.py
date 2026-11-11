@@ -29,7 +29,7 @@ from app.models import (
 from app.models.enums import AttendanceStatus, FunctionStatus, MembershipStatus, MinistryStatus, RoleScope, RoleStatus, UserStatus
 from app.repositories.authorization import AuthorizationRepository
 from app.repositories.rehearsal_read import RehearsalReadRepository
-from app.schemas.rehearsal_read import RehearsalInfo
+from app.schemas.rehearsal_read import MemberRehearsalDetail
 from app.services.rehearsal_read import RehearsalReadService, RehearsalViewer
 from app.services.token import TokenService
 
@@ -114,7 +114,7 @@ class RehearsalReadTests(unittest.TestCase):
         self.login(101)
 
     def login(self, user_id):
-        self.headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(user_id)}"}
+        self.headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(user_id, self.db.get(User, user_id).password_hash)}"}
 
     def get(self, rehearsal_id=None, **params):
         path = "/rehearsals" if rehearsal_id is None else f"/rehearsals/{rehearsal_id}"
@@ -179,14 +179,47 @@ class RehearsalReadTests(unittest.TestCase):
             self.assertEqual(self.ids(), [301, 302])
             for identifier in (301, 302):
                 body = self.get(identifier).json()
-                self.assertEqual(set(body), COMMON)
-                for secret in ("participants", "participant_count", "attendance_status", "arrival_at", "functions", "OtherParticipant", "Regular"):
+                self.assertEqual(set(body), COMMON | {"my_attendance"})
+                for secret in ("participants", "participant_count", "functions", "OtherParticipant", "Regular"):
                     self.assertNotIn(secret, str(body))
         for item in self.get().json()["items"]:
-            self.assertEqual(set(item), COMMON)
+            self.assertEqual(set(item), COMMON | {"attendance_status", "arrival_at"})
         self.assertEqual(self.get(303).status_code, 404)
         self.assertEqual(self.get(304).status_code, 404)
         self.assertEqual(self.get(305).status_code, 404)
+
+    def test_personal_attendance_values_and_no_other_member_leakage(self):
+        self.login(102)
+        other_arrival = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self.change(RehearsalAttendance, 402, attendance_status=AttendanceStatus.JUSTIFIED,
+                    arrival_at=other_arrival)
+        arrival = datetime(2026, 10, 25, 18, tzinfo=timezone.utc)
+        for status, recorded_arrival in (
+            (AttendanceStatus.ON_TIME, arrival), (AttendanceStatus.LATE, arrival),
+            (AttendanceStatus.ABSENT, None), (AttendanceStatus.JUSTIFIED, None),
+            (None, None), (None, arrival),
+        ):
+            with self.subTest(status=status, arrival=recorded_arrival):
+                self.change(RehearsalAttendance, 401, attendance_status=status, arrival_at=recorded_arrival)
+                expected = {"attendance_status": status.value if status else None,
+                            "arrival_at": recorded_arrival.replace(tzinfo=None).isoformat() if recorded_arrival else None}
+                detail = self.get(301)
+                self.assertEqual(detail.status_code, 200, detail.text)
+                self.assertEqual(detail.json()["my_attendance"], expected)
+                page = self.get(limit=1, ministry_id=11).json()
+                self.assertEqual(page["total"], 1)
+                item = page["items"][0]
+                self.assertEqual(item["id"], 301)
+                self.assertEqual({key: item[key] for key in expected}, expected)
+                self.assertNotIn("participants", detail.json())
+                self.assertNotIn("2026-01-01", detail.text)
+                self.assertNotIn("2026-01-01", str(page))
+        second = self.get(limit=1, offset=1).json()
+        self.assertEqual(second["total"], 2)
+        self.assertEqual(second["items"][0]["id"], 302)
+        self.assertIsNone(second["items"][0]["attendance_status"])
+        self.assertIsNone(second["items"][0]["arrival_at"])
+        self.assertEqual(self.get(limit=1, offset=2).json(), {"items": [], "total": 2})
 
     def test_user_filter_and_client_ids_cannot_expand_visibility(self):
         self.login(102)
@@ -310,7 +343,7 @@ class RehearsalReadTests(unittest.TestCase):
             headers = {} if token is None else {"Authorization": f"Bearer {token}"}
             for path in ("/rehearsals", "/rehearsals/301"):
                 self.assertEqual(self.client.get(path, headers=headers).status_code, 401)
-        token = jwt.encode({"sub": "102", "exp": 9999999999, "role": "ADMIN", "user_id": 101}, key, algorithm=settings.JWT_ALGORITHM)
+        token = jwt.encode({"sub": "102", "exp": 9999999999, "role": "ADMIN", "user_id": 101, "pwdv": TokenService(settings).credential_version(102, self.db.get(User, 102).password_hash)}, key, algorithm=settings.JWT_ALGORITHM)
         self.headers = {"Authorization": f"Bearer {token}"}
         self.assertEqual(self.ids(), [301, 302])
         self.assertNotIn("participants", self.get(301).json())
@@ -343,10 +376,11 @@ class RehearsalReadTests(unittest.TestCase):
         self.assertEqual(len(capture_request(301)), 4)
         self.assertEqual(len(capture_request(305)), 4)
         self.login(102)
+        self.assertEqual(len(capture_request(limit=1)), 4)
         self.assertEqual(len(capture_request(limit=100)), 4)
         statements = capture_request(301)
         self.assertEqual(len(statements), 3)
-        self.assertFalse(any("arrival_at" in sql or "attendance_status" in sql for sql in statements))
+        self.assertEqual(sum("arrival_at" in sql and "attendance_status" in sql for sql in statements), 1)
 
     def test_database_errors_fail_closed(self):
         with patch.object(AuthorizationRepository, "get_global_roles", side_effect=SQLAlchemyError("private")):
@@ -364,9 +398,11 @@ class RehearsalReadTests(unittest.TestCase):
         row = dict(self.db.execute(RehearsalReadRepository(self.db)._metadata().where(Rehearsal.id == 301)).mappings().one())
         for key in ("start_at", "end_at", "created_at", "updated_at"):
             row[key] = aware
+        row.update(attendance_status=AttendanceStatus.LATE, arrival_at=aware)
         repository.get_visible.return_value = row
         result = RehearsalReadService(repository).get_visible(RehearsalViewer(102, False), 301)
-        self.assertIs(type(result), RehearsalInfo)
+        self.assertIs(type(result), MemberRehearsalDetail)
+        self.assertEqual(result.my_attendance.arrival_at.utcoffset(), timedelta(hours=-5))
         self.assertEqual(result.start_at.utcoffset(), timedelta(hours=-5))
         self.assertIn("-05:00", result.model_dump_json())
         repository.get_participants.assert_not_called()

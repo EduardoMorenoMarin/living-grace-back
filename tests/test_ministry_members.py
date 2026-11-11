@@ -57,7 +57,7 @@ class MinistryMembersTests(unittest.TestCase):
         self.assignment = MinistryMemberRole(id=50, ministry_member_id=self.admin.id, role_id=37)
         self.db.add(self.assignment)
         self.db.commit()
-        self.headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(self.admin.user_id)}"}
+        self.headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(self.admin.user_id, self.db.get(User, self.admin.user_id).password_hash)}"}
 
         def override_db():
             yield self.db
@@ -346,5 +346,5 @@ class MinistryMembersTests(unittest.TestCase):
                 "functions": ["Guitar"] if stored.ministry_id == 1 else [],
             }, listing.json()["members"])
         self.assertEqual(self.db.get(MinistryMember, existing.id).status, MembershipStatus.PENDING)
-        user_headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(body['id'])}"}
+        user_headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(body['id'], self.db.get(User, body['id']).password_hash)}"}
         self.assertEqual(self.client.get("/ministries/1/members", headers=user_headers).status_code, 403)

@@ -6,7 +6,7 @@ from app.core.exceptions import RehearsalNotFound, RehearsalReadError
 from app.repositories.rehearsal_read import RehearsalReadRepository
 from app.schemas.rehearsal_read import (
     AdminRehearsalDetail, AdminRehearsalItem, AdminRehearsalPage,
-    RehearsalInfo, RehearsalPage, RehearsalParticipant,
+    MemberRehearsalDetail, MemberRehearsalItem, MyRehearsalAttendance, RehearsalPage, RehearsalParticipant,
 )
 
 
@@ -43,15 +43,23 @@ class RehearsalReadService:
                 AdminRehearsalItem(**self._metadata(row), participant_count=row["participant_count"])
                 for row in rows
             ], total=total)
-        return RehearsalPage(items=[RehearsalInfo(**self._metadata(row)) for row in rows], total=total)
+        return RehearsalPage(items=[MemberRehearsalItem(
+            **self._metadata(row), **self._attendance(row),
+        ) for row in rows], total=total)
 
-    def get_visible(self, viewer: RehearsalViewer, rehearsal_id: int) -> AdminRehearsalDetail | RehearsalInfo:
+    @staticmethod
+    def _attendance(row) -> dict:
+        return {key: row[key] for key in ("attendance_status", "arrival_at")}
+
+    def get_visible(self, viewer: RehearsalViewer, rehearsal_id: int) -> AdminRehearsalDetail | MemberRehearsalDetail:
         try:
             row = self.repository.get_visible(viewer.user_id, viewer.is_admin, rehearsal_id)
             if row is None:
                 raise RehearsalNotFound
             if not viewer.is_admin:
-                return RehearsalInfo(**self._metadata(row))
+                return MemberRehearsalDetail(
+                    **self._metadata(row), my_attendance=MyRehearsalAttendance(**self._attendance(row)),
+                )
             participants: dict[int, RehearsalParticipant] = {}
             for participant in self.repository.get_participants(rehearsal_id):
                 member_id = participant["ministry_member_id"]

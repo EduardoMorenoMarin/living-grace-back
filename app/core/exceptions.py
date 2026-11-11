@@ -2,6 +2,18 @@ class RegistrationConflict(Exception):
     pass
 
 
+class CurrentPasswordIncorrect(Exception):
+    pass
+
+
+class PasswordChangeValidationError(Exception):
+    pass
+
+
+class PasswordChangePersistenceError(Exception):
+    pass
+
+
 class RegistrationPersistenceError(Exception):
     pass
 
@@ -51,4 +63,32 @@ class MembershipNotFound(Exception):
 
 
 class MembershipTransitionConflict(Exception):
+    pass
+
+
+class AttendanceSessionInvalid(Exception):
+    pass
+
+
+class RehearsalQrSessionNotFound(Exception):
+    pass
+
+
+class AttendanceCheckInForbidden(Exception):
+    pass
+
+
+class AttendanceCheckInPersistenceError(Exception):
+    pass
+
+
+class PasswordResetUserNotFound(Exception):
+    pass
+
+
+class PasswordResetUserIneligible(Exception):
+    pass
+
+
+class DashboardReadError(Exception):
     pass

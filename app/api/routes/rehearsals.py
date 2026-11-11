@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, st
 
 from app.core.exceptions import RehearsalNotFound, RehearsalReadError
 from app.dependencies.rehearsal_read import get_rehearsal_read_service, get_rehearsal_viewer
-from app.schemas.rehearsal_read import AdminRehearsalDetail, AdminRehearsalPage, RehearsalInfo, RehearsalPage
+from app.schemas.rehearsal_read import AdminRehearsalDetail, AdminRehearsalPage, MemberRehearsalDetail, RehearsalPage
 from app.services.rehearsal_read import RehearsalReadService, RehearsalViewer
 
 from app.core.exceptions import MinistryNotFound, RehearsalPersistenceError, RehearsalValidationError
@@ -20,8 +20,72 @@ from app.services.rehearsal_update import RehearsalUpdateService
 from app.dependencies.rehearsal_delete import get_rehearsal_delete_service
 from app.services.rehearsal_delete import RehearsalDeleteService
 
+from app.dependencies.rehearsal_qr_session import get_rehearsal_qr_session_service
+from app.schemas.rehearsal_qr_session import RehearsalQrSessionCreate, RehearsalQrSessionResponse
+from app.services.rehearsal_qr_session import RehearsalQrSessionService
+from app.schemas.rehearsal_qr_session import RehearsalQrSessionMetadata
+from app.core.exceptions import RehearsalQrSessionNotFound
+
 
 router = APIRouter(prefix="/rehearsals", tags=["rehearsals"])
+
+
+@router.get("/{rehearsal_id}/qr-sessions/active", response_model=RehearsalQrSessionMetadata)
+def get_active_rehearsal_qr_session(
+    rehearsal_id: Annotated[int, Path(gt=0, le=9223372036854775807)],
+    user: Annotated[User, Depends(require_global_admin)],
+    service: Annotated[RehearsalQrSessionService, Depends(get_rehearsal_qr_session_service)],
+    response: Response,
+) -> RehearsalQrSessionMetadata:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return service.get_active(rehearsal_id, user.id)
+    except RehearsalNotFound:
+        raise HTTPException(status_code=404, detail="Rehearsal does not exist.") from None
+    except RehearsalQrSessionNotFound:
+        raise HTTPException(status_code=404, detail="No active QR session exists.") from None
+    except RehearsalReadError:
+        raise HTTPException(status_code=500, detail="Unable to retrieve QR session.") from None
+
+
+@router.delete("/{rehearsal_id}/qr-sessions/active", status_code=status.HTTP_204_NO_CONTENT,
+               response_class=Response)
+def revoke_active_rehearsal_qr_session(
+    rehearsal_id: Annotated[int, Path(gt=0, le=9223372036854775807)],
+    user: Annotated[User, Depends(require_global_admin)],
+    service: Annotated[RehearsalQrSessionService, Depends(get_rehearsal_qr_session_service)],
+) -> Response:
+    try:
+        service.revoke_active(rehearsal_id, user.id)
+    except RehearsalNotFound:
+        raise HTTPException(status_code=404, detail="Rehearsal does not exist.") from None
+    except RehearsalQrSessionNotFound:
+        raise HTTPException(status_code=404, detail="No revocable QR session exists.") from None
+    except RehearsalPersistenceError:
+        raise HTTPException(status_code=500, detail="Unable to revoke QR session.") from None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{rehearsal_id}/qr-sessions", response_model=RehearsalQrSessionResponse,
+             status_code=status.HTTP_201_CREATED)
+def create_rehearsal_qr_session(
+    rehearsal_id: Annotated[int, Path(gt=0, le=9223372036854775807)],
+    data: RehearsalQrSessionCreate,
+    user: Annotated[User, Depends(require_global_admin)],
+    service: Annotated[RehearsalQrSessionService, Depends(get_rehearsal_qr_session_service)],
+    response: Response,
+) -> RehearsalQrSessionResponse:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return service.create(rehearsal_id, user.id, data)
+    except RehearsalNotFound:
+        raise HTTPException(status_code=404, detail="Rehearsal does not exist.") from None
+    except RehearsalValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except RehearsalAttendanceConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except RehearsalPersistenceError:
+        raise HTTPException(status_code=500, detail="Unable to create QR session.") from None
 
 
 @router.delete("/{rehearsal_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
@@ -74,12 +138,12 @@ def list_rehearsals(
         raise HTTPException(status_code=500, detail="Unable to retrieve rehearsals.") from None
 
 
-@router.get("/{rehearsal_id}", response_model=AdminRehearsalDetail | RehearsalInfo)
+@router.get("/{rehearsal_id}", response_model=AdminRehearsalDetail | MemberRehearsalDetail)
 def get_rehearsal(
     rehearsal_id: Annotated[int, Path(gt=0, le=9223372036854775807)],
     viewer: Annotated[RehearsalViewer, Depends(get_rehearsal_viewer)],
     service: Annotated[RehearsalReadService, Depends(get_rehearsal_read_service)],
-) -> AdminRehearsalDetail | RehearsalInfo:
+) -> AdminRehearsalDetail | MemberRehearsalDetail:
     try:
         return service.get_visible(viewer, rehearsal_id)
     except RehearsalNotFound:
