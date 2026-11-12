@@ -19,7 +19,7 @@ class MembershipRegistrationService:
             membership = MinistryMember(
                 user_id=user_id,
                 ministry_id=selection.ministry_id,
-                status=MembershipStatus.ACTIVE,
+                status=MembershipStatus.PENDING,
                 ministry_member_functions=[
                     MinistryMemberFunction(function_id=function_id)
                     for function_id in selection.function_ids

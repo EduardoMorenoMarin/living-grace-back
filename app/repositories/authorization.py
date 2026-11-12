@@ -25,7 +25,11 @@ class AuthorizationRepository:
     def get_global_roles(self, user_id: int) -> set[str]:
         return set(self.db.scalars(self._global_roles(user_id).distinct()))
 
-    def _global_roles(self, user_id: int):
+    def effective_admin_membership_ids(self) -> set[int]:
+        statement = self._global_roles(None).with_only_columns(MinistryMember.id).where(Role.name == "ADMIN")
+        return set(self.db.scalars(statement))
+
+    def _global_roles(self, user_id: int | None):
         return (
             select(Role.name)
             .select_from(MinistryMemberRole)
@@ -34,7 +38,7 @@ class AuthorizationRepository:
             .join(Ministry, Ministry.id == MinistryMember.ministry_id)
             .join(Role, Role.id == MinistryMemberRole.role_id)
             .where(
-                User.id == user_id, User.status == UserStatus.ACTIVE, User.deleted_at.is_(None),
+                (User.id == user_id if user_id is not None else True), User.status == UserStatus.ACTIVE, User.deleted_at.is_(None),
                 MinistryMember.status == MembershipStatus.ACTIVE,
                 MinistryMember.deleted_at.is_(None),
                 Ministry.status == MinistryStatus.ACTIVE, Ministry.deleted_at.is_(None),

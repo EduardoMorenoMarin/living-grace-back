@@ -28,8 +28,8 @@ class MinistryMembersService:
                 member.functions.append(row["function"])
         return MinistryMembersResponse(ministry_id=ministry_id, members=list(members.values()))
 
-    def approve(self, ministry_id: int, membership_id: int) -> MembershipStatusResponse:
-        self.repository.approve(ministry_id, membership_id)
+    def update_status(self, ministry_id: int, membership_id: int, status: MembershipStatus, actor_user_id: int) -> MembershipStatusResponse:
+        self.repository.update_status(ministry_id, membership_id, status, actor_user_id)
         return MembershipStatusResponse(
-            ministry_id=ministry_id, ministry_member_id=membership_id, status=MembershipStatus.ACTIVE,
+            ministry_id=ministry_id, ministry_member_id=membership_id, status=status,
         )
