@@ -15,7 +15,7 @@ def get_notification_service(db: Annotated[Session, Depends(get_db)]) -> Notific
     return NotificationService(NotificationRepository(db))
 
 
-def get_assignment_notification_service(
+def get_rehearsal_notification_service(
     db: Annotated[Session, Depends(get_db)],
     delivery: Annotated[NotificationDeliveryService, Depends(get_notification_delivery_service)],
 ) -> NotificationService:

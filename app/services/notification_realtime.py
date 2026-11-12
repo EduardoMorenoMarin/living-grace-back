@@ -21,7 +21,7 @@ class NotificationSocketAuthenticator:
 
 
 class NotificationDeliveryService:
-    """Assignment producers call publish_created(id) AFTER commit.
+    """Rehearsal producers call publish_created(id) AFTER commit.
 
     An independent READ COMMITTED session reads persisted data and owner identity.
     Uncommitted inserts are invisible; offline delivery does not remove DB rows.

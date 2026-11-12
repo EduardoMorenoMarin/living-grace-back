@@ -83,9 +83,12 @@ class RehearsalAssignmentNotificationTests(unittest.TestCase):
     def test_existing_participant_addition_notifies_only_new_members_and_uses_new_name(self):
         response = self.update(name="Renamed practice", ministry_member_ids=[203, 206, 201, 205])
         self.assertEqual(response.status_code, 200, response.text)
-        rows = self.notifications()
+        notifications = self.notifications()
+        rows = [row for row in notifications if row.type == "REHEARSAL_ASSIGNED"]
         self.assertEqual(len(rows), 2)
         self.assertEqual({row.user_id for row in rows}, {101, 103})
+        updates = [row for row in notifications if row.type == "REHEARSAL_UPDATED"]
+        self.assertEqual({row.user_id for row in updates}, {102, 104})
         self.assertTrue(all("Renamed practice" in row.message for row in rows))
         self.assertEqual({row.resource_id for row in rows}, {301})
         self.assertEqual(self.assigned_member_ids(301), {203, 206, 201, 205})
@@ -96,7 +99,7 @@ class RehearsalAssignmentNotificationTests(unittest.TestCase):
         self.assertEqual(self.update(ministry_member_ids=[203, 206, 205]).status_code, 200)
         self.assertEqual(len(self.notifications()), 1)
         self.assertEqual(self.update(ministry_member_ids=[205, 206, 203]).status_code, 200)
-        self.assertEqual(self.update(name="Only a rename").status_code, 200)
+        self.assertEqual(self.update(description="Description only", tolerance_minutes=20).status_code, 200)
         self.assertEqual(len(self.notifications()), 1)
         # Removing a pending assignment does not send a cancellation notification.
         self.assertEqual(self.update(ministry_member_ids=[203, 206]).status_code, 200)

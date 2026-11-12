@@ -18,12 +18,29 @@ class NotificationService:
         self.publisher = publisher
 
     def create_rehearsal_assignments(self, rehearsal: Rehearsal, new_member_ids: list[int]) -> list[int]:
-        if not new_member_ids:
+        return self._create_rehearsal_notifications(
+            rehearsal, new_member_ids, "REHEARSAL_ASSIGNED", "New rehearsal assignment",
+            f'You have been assigned to rehearsal "{rehearsal.name}".',
+        )
+
+    def create_rehearsal_updates(self, rehearsal: Rehearsal, retained_member_ids: list[int]) -> list[int]:
+        return self._create_rehearsal_notifications(
+            rehearsal, retained_member_ids, "REHEARSAL_UPDATED", "Rehearsal updated",
+            f'The details of your rehearsal "{rehearsal.name}" have changed.',
+        )
+
+    def create_rehearsal_cancellations(self, rehearsal: Rehearsal, member_ids: list[int]) -> list[int]:
+        return self._create_rehearsal_notifications(
+            rehearsal, member_ids, "REHEARSAL_CANCELLED", "Rehearsal canceled",
+            f'Your rehearsal "{rehearsal.name}" has been canceled.',
+        )
+
+    def _create_rehearsal_notifications(self, rehearsal, member_ids, notification_type, title, message):
+        if not member_ids:
             return []
-        user_ids = self.repository.assignment_user_ids(rehearsal.id, rehearsal.ministry_id, new_member_ids)
+        user_ids = self.repository.assignment_user_ids(rehearsal.id, rehearsal.ministry_id, member_ids)
         return self.repository.add_many([
-            Notification(user_id=user_id, type="REHEARSAL_ASSIGNED", title="New rehearsal assignment",
-                         message=f'You have been assigned to rehearsal "{rehearsal.name}".',
+            Notification(user_id=user_id, type=notification_type, title=title, message=message,
                          resource_type="rehearsal", resource_id=rehearsal.id, is_read=False)
             for user_id in user_ids
         ])
@@ -36,7 +53,7 @@ class NotificationService:
                 self.publisher(notification_id)
             except Exception:
                 # Persistence has already committed. Delivery is best effort and
-                # must neither fail the assignment response nor skip later users.
+                # must neither fail the business response nor skip later users.
                 continue
 
     def mark_read(self, user_id: int, notification_id: int) -> NotificationReadResponse:

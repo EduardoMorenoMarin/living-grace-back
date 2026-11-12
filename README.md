@@ -944,8 +944,8 @@ extensible without introducing a PostgreSQL enum. Composite indexes
 and newest-first pagination.
 
 Listing, unread count, individual mark-read, and bulk mark-read are implemented.
-Authenticated WebSocket delivery is available as described below. Assignment
-producers now generate rehearsal assignment notifications (see below). Other
+Authenticated WebSocket delivery is available as described below. Rehearsal
+producers generate assignment, update, and deletion notifications (see below). Other
 notification types in tests are inserted directly; no production fixtures are seeded.
 
 Run `.venv/bin/python -m unittest discover -s tests -p test_notifications.py`.
@@ -1047,8 +1047,8 @@ WebSocket events or create additional notifications.
 `WS /ws/notifications` is a user-scoped server-to-client stream. Existing HTTP
 notification endpoints retain their behavior. PostgreSQL remains the source of
 truth; opening a socket and receiving events never mark notifications as read.
-Rehearsal assignment producers are connected as described below. Membership,
-attendance, rehearsal metadata changes, and cancellations do not produce events.
+Rehearsal assignment, meaningful update, and deletion producers are connected as
+described below. Membership and attendance changes do not produce events.
 
 #### Authentication flow
 
@@ -1164,7 +1164,7 @@ Example event:
 
 `NotificationDeliveryService.publish_created(notification_id)` is the reusable
 async delivery entry point, assembled by `get_notification_delivery_service()`.
-Rehearsal assignment producers, and any future producers, must persist and COMMIT
+Rehearsal producers, and any future producers, must persist and COMMIT
 the notification before calling it.
 The service opens an independent database session, reads the committed row and
 its owner, builds the explicit event schema, and sends only to that owner's
@@ -1210,15 +1210,16 @@ notifications:
   newly assigned and receives one notification.
 - `RehearsalUpdateService.update()` (`PATCH /rehearsals/{id}`): only membership IDs
   newly added to the participant list receive notifications. A simultaneous rename
-  is reflected in the new participants' assignment messages; existing participants
-  do not receive a rehearsal-update notification.
+  is reflected in the new participants' assignment messages. Retained participants
+  receive REHEARSAL_UPDATED when meaningful details change, as described below.
 
 The recipient user IDs come from assigned ministry memberships after existing
 eligibility validation, never a client notification recipient field. One bulk
 lookup deduplicates user IDs and checks that each membership has an assignment
 row for the same rehearsal/ministry. Duplicate participant IDs remain invalid.
-Unchanged lists, list reordering, metadata-only changes, removals, attendance,
-QR self-check-in (including walk-ins), and memberships generate no notifications.
+Unchanged lists, list reordering, description/tolerance-only changes, participant
+removals alone, attendance, QR self-check-in (including walk-ins), and memberships
+generate no notifications.
 Re-adding a previously removed participant is a new assignment and notifies again.
 Creating a new rehearsal is still a new operation: this does not add an idempotency
 key or deduplicate repeated rehearsal-creation requests.
@@ -1269,7 +1270,79 @@ delivery failure cannot roll back the committed assignment/notification or preve
 a delivery attempt for the next recipient. A process crash between commit and
 send can lose the live event; persisted notifications remain available. There is
 no outbox, replay worker, or cross-process broker. Single-worker deployment remains
-required. No new endpoints, migrations, or other notification producers are added.
+required. No new endpoints, migrations, membership producers, or attendance producers
+are added.
 
 Run `.venv/bin/python -m unittest discover -s tests -p test_rehearsal_notifications.py`
 for assignment/notification atomicity and live WebSocket delivery coverage.
+
+
+### Rehearsal update and cancellation notifications
+
+The existing `PATCH /rehearsals/{id}` flow generates `REHEARSAL_UPDATED` when
+`name`, `start_at`, or `end_at` actually changes. The current model has no location
+field. Names use the existing trimmed schema value; datetime comparisons use
+instants, so equivalent timezone offsets do not count as changes. Description,
+tolerance, and internal timestamps are not meaningful notification triggers.
+
+Recipients are the intersection of the original locked assignments and final
+assignments. Each retained user receives at most one update notification per
+successful operation, even if several fields change. Newly added users receive
+only `REHEARSAL_ASSIGNED`; removed users receive neither type. Adding/removing
+participants alone, reordering IDs, and repeating an unchanged update generate no
+update notices. Existing membership eligibility, recorded-attendance protections,
+admin authorization, ministry visibility, and rehearsal locks are preserved.
+
+Example notification fields (IDs and timestamps are assigned by the database):
+
+```json
+{
+  "type": "REHEARSAL_UPDATED",
+  "title": "Rehearsal updated",
+  "message": "The details of your rehearsal \"Sunday practice\" have changed.",
+  "resource_type": "rehearsal",
+  "resource_id": 306
+}
+```
+
+There is no persisted cancellation status. `REHEARSAL_CANCELLED` represents a
+successful physical deletion through the existing `DELETE /rehearsals/{id}`.
+The service locks the rehearsal and attendance rows, applies the existing guard
+against deleting recorded attendance, then snapshots recipients from assignments
+immediately before deletion. It creates cancellation notifications before the
+assignment rows cascade away, in the same transaction as the deletion.
+
+```json
+{
+  "type": "REHEARSAL_CANCELLED",
+  "title": "Rehearsal canceled",
+  "message": "Your rehearsal \"Sunday practice\" has been canceled.",
+  "resource_type": "rehearsal",
+  "resource_id": 306
+}
+```
+
+The rehearsal and assignment rows are deleted; notification history remains.
+`resource_id` is an informational reference without a rehearsal foreign key.
+The frontend should display cancellation details from the notification and handle
+404 when attempting to open a deleted resource. Repeated DELETE requests return
+the existing 404 and do not create duplicate notices. Zero-participant rehearsals
+produce no notices. Failed, unauthorized, or blocked deletions produce none.
+
+All notice inserts flush without independent commits. An update/delete failure,
+notification failure, or failed commit rolls back the operation and its notices.
+Only after successful commit does the existing publisher call
+`NotificationDeliveryService.publish_created(id)` on the application event loop.
+Events retain the `notification.created` envelope; `data.notification_type` is
+`REHEARSAL_UPDATED` or `REHEARSAL_CANCELLED`. The owner ID is never exposed in
+that event. Delivery errors cannot undo committed changes or skip subsequent
+recipients; offline users retain unread notifications in HTTP history.
+
+The existing single-process and best-effort delivery limitations remain: there is
+no outbox/replay worker, and a crash after commit can lose the live event. Clients
+must refetch notifications and unread counts after reconnecting. No new endpoints,
+schema changes, attendance/QR changes, membership notifications, or workers are
+introduced.
+
+Run `.venv/bin/python -m unittest discover -s tests -p test_rehearsal_change_notifications.py`
+for triggering rules, atomicity, deletion history, and live delivery coverage.
