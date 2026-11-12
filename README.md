@@ -708,19 +708,21 @@ Temporary passwords have no separate expiry; another reset replaces them.
 temporary login, forced-change restrictions, token invalidation, and transaction
 rollback. Run `.venv/bin/python -m unittest discover -s tests` for regressions.
 
-### Personal member dashboard
+### Role-based dashboard
 
 `GET /dashboard/me` uses the existing JWT authentication and global USER/ADMIN
-eligibility checks. Mandatory password changes block access with 403. Global
-admins receive only their own participant assignments and attendance here.
+eligibility checks. Mandatory password changes block access with 403. Role selection
+uses only the server-side `RehearsalViewer.is_admin` permission result.
 
 Optional `ministry_id` limits attendance and rehearsal sections to an active,
 nondeleted membership in an active, nondeleted ministry. An unavailable or
 unrelated ministry returns 404; malformed IDs return 422. The profile continues
 to list all eligible active memberships and their active, unrevoked functions.
 
-The response contains `selected_ministry_id`, `profile`, `monthly_attendance`,
-`recent_attendance`, `next_rehearsal`, and `upcoming_rehearsals`. See
+The regular-member response contains `selected_ministry_id`, `profile`, `monthly_attendance`,
+`recent_attendance`, `next_rehearsal`, and `upcoming_rehearsals`, unchanged. Admins
+receive distinct `ministry_attendance` and `recent_rehearsals` fields in place of
+`monthly_attendance` and `recent_attendance`. Admin fields are absent for members. See
 `app/schemas/dashboard.py` for the full response contract.
 
 Configure `APP_TIMEZONE` with an IANA timezone name (default `America/Lima`);
@@ -739,18 +741,54 @@ and return null for an empty denominator.
 Recent activity contains at most five completed rehearsals with non-NULL
 statuses across all dates, ordered by start time and ID descending.
 `rehearsal_date` is the rehearsal start date in `APP_TIMEZONE`. Upcoming contains
-at most five assignments with `start_at >= now`, ordered by start time and ID
+at most five rehearsals with `start_at >= now`, ordered by start time and ID
 ascending. Ongoing rehearsals are excluded. `next_rehearsal` equals the first
-upcoming card, or null; lists are empty when no results qualify.
+upcoming card, or null; lists are empty when no results qualify. Members see only
+their assignments; admins see all rehearsals in their visible ministries.
 
-The repository reuses personal rehearsal visibility and SQL metadata queries,
+The repository reuses role-based rehearsal visibility and SQL metadata queries,
 uses SQL aggregation for counts, and bounds both history and upcoming queries.
 The normal request uses six SELECTs including JWT user lookup and authorization;
 query count does not grow with attendance history. No database schema changes
 are needed. Attendance rows remain the existing representation of participant
 assignments, including rows created by QR check-in; no separate preassignment
-provenance is available. Historical results from inactive memberships or
-ministries are excluded consistently with rehearsal visibility.
+provenance is available. Member history excludes inactive memberships; all dashboard
+sections exclude ministries unavailable to the viewer.
+
+For admins, `ministry_attendance` reports:
+
+- `month`, `timezone`: the same current local calendar month used for members.
+- `total_rehearsals`: rehearsals starting in that month, including future and ongoing ones.
+- `completed_rehearsals`: the subset with `end_at <= now`.
+- `total_members`: distinct users with active, nondeleted memberships in the scoped
+  ministries, independent of assignments and month. A person in several ministries
+  counts once when no ministry filter is supplied.
+- `total_attendance_records`: participant assignment rows for completed rehearsals
+  starting in that month. Counts never multiply by ministry functions or roles.
+- `on_time`, `late`, `absent`, `justified`, `unresolved`: status counts over those
+  records. Null status means unresolved, even with an arrival time. A member with
+  no assignment row contributes no record and is never inferred absent. Rehearsals
+  with zero assignments still count as rehearsals, with zero status counts.
+- `attendance_rate`: `(on_time + late) / (on_time + late + absent) * 100`.
+- `punctuality_rate`: `on_time / (on_time + late) * 100`.
+
+Both rates exclude justified and unresolved records from their denominators,
+round to two decimals, and return null when the denominator is zero. Monthly
+rates use pooled record counts, rather than averaging rehearsal percentages.
+Existing assignment records remain historical evidence even if the participant's
+membership later becomes inactive or deleted, matching admin rehearsal detail
+reads. Records must belong to a member of the rehearsal's ministry.
+
+`recent_rehearsals` contains at most five completed rehearsals across all dates,
+ordered by `start_at DESC, id DESC`, including zero-participant rehearsals and
+those with only unresolved statuses. Each item includes `rehearsal_id`, `name`,
+`ministry`, local `rehearsal_date`, `total_participants`, the five status counts,
+and `attendance_rate` using the same formula for that rehearsal's records.
+
+Every admin query applies the existing active ministry membership visibility
+rule before aggregation or limits. With `ministry_id`, only that ministry is
+counted; without it, only the admin's visible ministries are combined. The
+profile continues to list all eligible memberships regardless of the filter.
 
 Run `.venv/bin/python -m unittest discover -s tests -p test_dashboard.py -v`
 for dashboard contracts and `.venv/bin/python -m unittest discover -s tests`

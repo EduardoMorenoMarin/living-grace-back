@@ -76,6 +76,8 @@ class DashboardTests(unittest.TestCase):
         self.db.commit()
         self.add(self.now - timedelta(days=1), AttendanceStatus.ON_TIME, member=207, ministry=13)
         body = self.body()
+        self.assertNotIn("ministry_attendance", body)
+        self.assertNotIn("recent_rehearsals", body)
         self.assertEqual(body["profile"], {
             "user_id": 102, "display_name": "Regular Last", "account_status": "ACTIVE", "is_global_admin": False,
             "memberships": [
@@ -111,15 +113,18 @@ class DashboardTests(unittest.TestCase):
         for ministry in (0, -1, "invalid", 9223372036854775808):
             self.assertEqual(self.dashboard(ministry_id=ministry).status_code, 422)
 
-    def test_admin_upcoming_includes_unassigned_but_attendance_remains_personal(self):
+    def test_admin_upcoming_and_ministry_attendance(self):
         _, upcoming = self.populate()
         own_past = self.add(self.now - timedelta(days=2), AttendanceStatus.LATE, member=201)
         own_future = self.add(self.now + timedelta(hours=1), member=202, ministry=12)
         self.login(101)
         body = self.body()
         self.assertTrue(body["profile"]["is_global_admin"])
-        self.assertEqual(body["monthly_attendance"]["total_completed_assigned_rehearsals"], 1)
-        self.assertEqual([r["rehearsal_id"] for r in body["recent_attendance"]], [own_past])
+        self.assertEqual(body["ministry_attendance"]["completed_rehearsals"], 7)
+        self.assertEqual(body["recent_rehearsals"][0]["rehearsal_id"], own_past)
+        self.assertEqual(len(body["recent_rehearsals"]), 5)
+        self.assertNotIn("monthly_attendance", body)
+        self.assertNotIn("recent_attendance", body)
         self.assertEqual([r["rehearsal_id"] for r in body["upcoming_rehearsals"]], [own_future] + upcoming[:4])
         self.assertEqual(body["next_rehearsal"], body["upcoming_rehearsals"][0])
         self.assertNotIn("participant_count", str(body))
@@ -156,6 +161,7 @@ class DashboardTests(unittest.TestCase):
 
     def test_admin_upcoming_requires_active_membership_and_ministry(self):
         self.add(self.now, member=204, ministry=12)
+        self.add(self.now - timedelta(days=1), AttendanceStatus.ON_TIME, member=204, ministry=12)
         self.login(101)
         cases = (
             (MinistryMember, 202, "status", MembershipStatus.INACTIVE),
@@ -171,8 +177,119 @@ class DashboardTests(unittest.TestCase):
                 body = self.body()
                 self.assertEqual(body["upcoming_rehearsals"], [])
                 self.assertIsNone(body["next_rehearsal"])
+                self.assertEqual(body["ministry_attendance"]["total_rehearsals"], 0)
+                self.assertEqual(body["ministry_attendance"]["total_attendance_records"], 0)
+                self.assertEqual(body["recent_rehearsals"], [])
                 self.assertEqual(self.dashboard(ministry_id=12).status_code, 404)
                 self.change(model, identifier, **{key: previous})
+
+    def test_admin_mixed_statuses_scoping_and_historical_participants(self):
+        rehearsal = self.add(self.now - timedelta(days=1), AttendanceStatus.ON_TIME)
+        for identifier, member, status in ((9001, 201, AttendanceStatus.LATE),
+                                            (9002, 205, AttendanceStatus.ABSENT),
+                                            (9003, 206, AttendanceStatus.JUSTIFIED)):
+            self.db.add(RehearsalAttendance(id=identifier, rehearsal_id=rehearsal,
+                                           ministry_member_id=member, attendance_status=status))
+        unresolved = self.add(self.now - timedelta(days=2))
+        future = self.add(self.now + timedelta(days=1), AttendanceStatus.ABSENT)
+        self.add(self.now - timedelta(days=1), AttendanceStatus.ABSENT, member=204, ministry=12)
+        self.add(self.now - timedelta(days=1), AttendanceStatus.ABSENT, member=207, ministry=13)
+        self.db.commit()
+        # Historical results remain even after a participant becomes inactive.
+        self.change(MinistryMember, 206, status=MembershipStatus.INACTIVE)
+        self.login(101)
+        body = self.body(ministry_id=11)
+        self.assertEqual(body["ministry_attendance"], {
+            "month": "2026-11", "timezone": "America/Lima", "total_rehearsals": 3,
+            "completed_rehearsals": 2, "total_members": 3, "total_attendance_records": 5,
+            "on_time": 1, "late": 1, "absent": 1, "justified": 1, "unresolved": 1,
+            "attendance_rate": 66.67, "punctuality_rate": 50.0,
+        })
+        self.assertEqual(body["recent_rehearsals"], [
+            {"rehearsal_id": rehearsal, "ministry": {"id": 11, "name": "Ministry 11"},
+             "name": f"Rehearsal {rehearsal}", "rehearsal_date": "2026-11-14",
+             "total_participants": 4, "on_time": 1, "late": 1, "absent": 1,
+             "justified": 1, "unresolved": 0, "attendance_rate": 66.67},
+            {"rehearsal_id": unresolved, "ministry": {"id": 11, "name": "Ministry 11"},
+             "name": f"Rehearsal {unresolved}", "rehearsal_date": "2026-11-13",
+             "total_participants": 1, "on_time": 0, "late": 0, "absent": 0,
+             "justified": 0, "unresolved": 1, "attendance_rate": None},
+        ])
+        self.assertEqual(body["next_rehearsal"]["rehearsal_id"], future)
+        other = self.body(ministry_id=12)["ministry_attendance"]
+        self.assertEqual(other["total_attendance_records"], 1)
+        self.assertEqual(other["attendance_rate"], 0.0)
+        self.assertIsNone(other["punctuality_rate"])
+        all_visible = self.body()["ministry_attendance"]
+        self.assertEqual(all_visible["total_attendance_records"], 6)
+        self.assertEqual(all_visible["total_members"], 3)
+        self.assertEqual(self.dashboard(ministry_id=13).status_code, 404)
+
+    def test_admin_empty_and_unassigned_rehearsals(self):
+        self.login(101)
+        body = self.body(ministry_id=11)
+        summary = body["ministry_attendance"]
+        self.assertEqual(summary["total_members"], 4)
+        for key in ("total_rehearsals", "completed_rehearsals", "total_attendance_records",
+                    "on_time", "late", "absent", "justified", "unresolved"):
+            self.assertEqual(summary[key], 0)
+        self.assertIsNone(summary["attendance_rate"])
+        self.assertIsNone(summary["punctuality_rate"])
+        self.assertEqual(body["recent_rehearsals"], [])
+        self.assertEqual(body["upcoming_rehearsals"], [])
+        self.assertIsNone(body["next_rehearsal"])
+        rehearsal = self.add(self.now - timedelta(days=1))
+        self.db.execute(delete(RehearsalAttendance))
+        self.db.commit()
+        body = self.body(ministry_id=11)
+        self.assertEqual(body["ministry_attendance"]["completed_rehearsals"], 1)
+        self.assertEqual(body["ministry_attendance"]["total_attendance_records"], 0)
+        self.assertEqual(body["recent_rehearsals"][0]["rehearsal_id"], rehearsal)
+        self.assertEqual(body["recent_rehearsals"][0]["total_participants"], 0)
+        self.assertEqual(body["recent_rehearsals"][0]["unresolved"], 0)
+
+    def test_admin_month_boundaries_completed_cutoff_and_recent_order(self):
+        outside = self.add(datetime(2026, 11, 1, 4, 59, tzinfo=UTC), AttendanceStatus.ABSENT)
+        self.add(datetime(2026, 11, 1, 5, tzinfo=UTC), AttendanceStatus.JUSTIFIED)
+        ongoing = self.add(self.now - timedelta(minutes=1), AttendanceStatus.ABSENT,
+                           end=self.now + timedelta(hours=1))
+        ended = self.add(self.now - timedelta(hours=1), AttendanceStatus.ON_TIME, end=self.now)
+        tied = self.add(self.now - timedelta(hours=1), AttendanceStatus.LATE, end=self.now)
+        future = self.add(datetime(2026, 12, 1, 5, tzinfo=UTC), AttendanceStatus.ABSENT)
+        self.login(101)
+        body = self.body(ministry_id=11)
+        summary = body["ministry_attendance"]
+        self.assertEqual(summary["total_rehearsals"], 4)
+        self.assertEqual(summary["completed_rehearsals"], 3)
+        self.assertEqual(summary["total_attendance_records"], 3)
+        self.assertEqual(summary["absent"], 0)
+        self.assertEqual(summary["attendance_rate"], 100.0)
+        self.assertEqual(summary["punctuality_rate"], 50.0)
+        recent = body["recent_rehearsals"]
+        self.assertEqual([r["rehearsal_id"] for r in recent[:2]], [tied, ended])
+        self.assertEqual(recent[-1]["rehearsal_id"], outside)
+        self.assertEqual(recent[-1]["rehearsal_date"], "2026-10-31")
+        self.assertNotIn(ongoing, [r["rehearsal_id"] for r in recent])
+        self.assertEqual(body["next_rehearsal"]["rehearsal_id"], future)
+
+    def test_admin_authorization_is_server_side_and_failures_are_sanitized(self):
+        self.populate()
+        body = self.body(role="ADMIN", is_admin=True)
+        self.assertIn("monthly_attendance", body)
+        self.assertNotIn("ministry_attendance", body)
+        self.login(101)
+        self.change(MinistryMemberRole, 501, revoked_at=self.now)
+        body = self.body(role="ADMIN", is_admin=True)
+        self.assertFalse(body["profile"]["is_global_admin"])
+        self.assertIn("monthly_attendance", body)
+        self.assertNotIn("ministry_attendance", body)
+        self.change(MinistryMemberRole, 501, revoked_at=None)
+        for method in ("ministry_monthly_counts", "recent_rehearsals"):
+            with self.subTest(method=method), patch.object(DashboardRepository, method,
+                                                         side_effect=SQLAlchemyError("private")):
+                response = self.dashboard()
+                self.assertEqual(response.status_code, 500)
+                self.assertEqual(response.json(), {"detail": "Unable to retrieve dashboard."})
 
     def test_empty_dashboard_has_zero_counts_null_rates_and_no_next(self):
         body = self.body()

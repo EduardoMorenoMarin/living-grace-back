@@ -61,3 +61,42 @@ class DashboardResponse(BaseModel):
     recent_attendance: list[RecentAttendance]
     next_rehearsal: DashboardRehearsal | None
     upcoming_rehearsals: list[DashboardRehearsal]
+
+
+class MinistryAttendance(BaseModel):
+    month: str
+    timezone: str
+    total_rehearsals: int
+    completed_rehearsals: int
+    total_members: int
+    total_attendance_records: int
+    on_time: int
+    late: int
+    absent: int
+    justified: int
+    unresolved: int
+    attendance_rate: float | None
+    punctuality_rate: float | None
+
+
+class RecentRehearsal(BaseModel):
+    rehearsal_id: int
+    ministry: RehearsalMinistry
+    name: str
+    rehearsal_date: date
+    total_participants: int
+    on_time: int
+    late: int
+    absent: int
+    justified: int
+    unresolved: int
+    attendance_rate: float | None
+
+
+class AdminDashboardResponse(BaseModel):
+    selected_ministry_id: int | None
+    profile: DashboardProfile
+    ministry_attendance: MinistryAttendance
+    recent_rehearsals: list[RecentRehearsal]
+    next_rehearsal: DashboardRehearsal | None
+    upcoming_rehearsals: list[DashboardRehearsal]
