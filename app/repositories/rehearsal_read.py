@@ -1,9 +1,11 @@
 from collections.abc import Sequence
+from datetime import datetime, timezone
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.orm import Session
 
+from app.core.attendance import effective_status
 from app.models.enums import FunctionStatus, MembershipStatus, MinistryStatus
 from app.models.function import Function
 from app.models.ministry import Ministry
@@ -12,6 +14,10 @@ from app.models.ministry_member_function import MinistryMemberFunction
 from app.models.rehearsal import Rehearsal
 from app.models.rehearsal_attendance import RehearsalAttendance
 from app.models.user import User
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
 
 
 class RehearsalReadRepository:
@@ -47,7 +53,7 @@ class RehearsalReadRepository:
             User.last_name.label("creator_last_name"),
         ).join(Ministry, Ministry.id == Rehearsal.ministry_id).join(User, User.id == Rehearsal.created_by)
 
-    def _member_metadata(self, user_id: int):
+    def _member_metadata(self, user_id: int, now=None):
         # Unique membership and attendance constraints keep one row per rehearsal.
         return self._metadata().join(MinistryMember, and_(
             MinistryMember.ministry_id == Rehearsal.ministry_id,
@@ -57,7 +63,7 @@ class RehearsalReadRepository:
         )).join(RehearsalAttendance, and_(
             RehearsalAttendance.rehearsal_id == Rehearsal.id,
             RehearsalAttendance.ministry_member_id == MinistryMember.id,
-        )).add_columns(RehearsalAttendance.attendance_status, RehearsalAttendance.arrival_at)
+        )).add_columns(effective_status(now if now is not None else utc_now()), RehearsalAttendance.arrival_at)
 
     def list_visible(
         self, user_id: int, is_admin: bool, limit: int, offset: int, ministry_id: int | None,
@@ -78,8 +84,8 @@ class RehearsalReadRepository:
         rows = self.db.execute(statement.order_by(Rehearsal.start_at.desc(), Rehearsal.id).limit(limit).offset(offset))
         return rows.mappings().all(), total or 0
 
-    def get_visible(self, user_id: int, is_admin: bool, rehearsal_id: int) -> RowMapping | None:
-        statement = self._metadata() if is_admin else self._member_metadata(user_id)
+    def get_visible(self, user_id: int, is_admin: bool, rehearsal_id: int, now=None) -> RowMapping | None:
+        statement = self._metadata() if is_admin else self._member_metadata(user_id, now)
         return self.db.execute(statement.where(
             Rehearsal.id == rehearsal_id, self._visibility(user_id, is_admin),
         )).mappings().one_or_none()
@@ -92,16 +98,17 @@ class RehearsalReadRepository:
             .execution_options(populate_existing=True)
         )
 
-    def get_participants(self, rehearsal_id: int) -> Sequence[RowMapping]:
+    def get_participants(self, rehearsal_id: int, now=None) -> Sequence[RowMapping]:
         # Retain selected participants and recorded attendance even if their
         # membership subsequently becomes inactive. Only ADMIN calls this read.
         return self.db.execute(
             select(
                 MinistryMember.id.label("ministry_member_id"), User.id.label("user_id"),
                 User.first_name, User.last_name, RehearsalAttendance.arrival_at,
-                RehearsalAttendance.attendance_status, Function.name.label("function"),
+                effective_status(now if now is not None else utc_now()), Function.name.label("function"),
             )
             .select_from(RehearsalAttendance)
+            .join(Rehearsal, Rehearsal.id == RehearsalAttendance.rehearsal_id)
             .join(MinistryMember, MinistryMember.id == RehearsalAttendance.ministry_member_id)
             .join(User, User.id == MinistryMember.user_id)
             .outerjoin(MinistryMemberFunction, and_(

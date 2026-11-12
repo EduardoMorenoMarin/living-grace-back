@@ -605,7 +605,10 @@ The response contains `rehearsal_id`, `attendance_status`, and UTC `arrival_at`.
 New attendance rows return 201; updates to existing NULL or ABSENT placeholders
 return 200. A recorded arrival or an ON_TIME, LATE, or JUSTIFIED status returns
 409 without modifying the row. ON_TIME includes the exact boundary
-`start_at + tolerance_minutes`; later arrivals are LATE.
+`start_at + tolerance_minutes`; later arrivals before `end_at` are LATE.
+Check-in rejects `now >= end_at` even if the QR session remains open. Both
+expiration and rehearsal completion are revalidated after locks and after the
+write; crossing either boundary rolls back the transaction.
 
 The endpoint hashes the submitted token with SHA-256. Unknown, revoked,
 not-yet-open, expired, or missing-rehearsal sessions return the same generic 400.
@@ -730,16 +733,18 @@ invalid names fail settings validation. The summary always covers the current
 calendar month in that timezone, based on rehearsal `start_at`. Boundaries are
 converted to UTC for database comparisons. Completed means `end_at <= now`.
 The total includes all completed assigned rehearsals in the month, including
-JUSTIFIED and unresolved results; unresolved means a NULL attendance status,
-regardless of arrival time. NULL never implies ABSENT.
+historical JUSTIFIED records. Statuses use the shared effective calculation in
+`app/core/attendance.py`; a completed assignment with NULL status and no arrival
+is reported ABSENT without updating its database row.
 
 Attendance rate is `(ON_TIME + LATE) / (ON_TIME + LATE + ABSENT) * 100`.
-Punctuality rate is `ON_TIME / (ON_TIME + LATE) * 100`. JUSTIFIED and unresolved
-results contribute to neither denominator. Rates are rounded to two decimals
+Punctuality rate is `ON_TIME / (ON_TIME + LATE) * 100`. Historical JUSTIFIED
+and pending results contribute to neither denominator. Rates are rounded to two decimals
 and return null for an empty denominator.
 
-Recent activity contains at most five completed rehearsals with non-NULL
-statuses across all dates, ordered by start time and ID descending.
+Recent activity contains at most five completed assigned rehearsals across all
+dates, including effective absences and historical JUSTIFIED records, ordered
+by start time and ID descending.
 `rehearsal_date` is the rehearsal start date in `APP_TIMEZONE`. Upcoming contains
 at most five rehearsals with `start_at >= now`, ordered by start time and ID
 ascending. Ongoing rehearsals are excluded. `next_rehearsal` equals the first
@@ -765,14 +770,15 @@ For admins, `ministry_attendance` reports:
   counts once when no ministry filter is supplied.
 - `total_attendance_records`: participant assignment rows for completed rehearsals
   starting in that month. Counts never multiply by ministry functions or roles.
-- `on_time`, `late`, `absent`, `justified`, `unresolved`: status counts over those
-  records. Null status means unresolved, even with an arrival time. A member with
-  no assignment row contributes no record and is never inferred absent. Rehearsals
-  with zero assignments still count as rehearsals, with zero status counts.
+- `on_time`, `late`, `absent`: effective status counts over those records.
+  A member with no assignment row contributes no record and is never inferred
+  absent. Rehearsals with zero assignments still count as rehearsals, with zero
+  status counts. Historical JUSTIFIED records remain in participant/record totals
+  but not these three status counts or rate denominators.
 - `attendance_rate`: `(on_time + late) / (on_time + late + absent) * 100`.
 - `punctuality_rate`: `on_time / (on_time + late) * 100`.
 
-Both rates exclude justified and unresolved records from their denominators,
+Both rates exclude historical JUSTIFIED and pending records from their denominators,
 round to two decimals, and return null when the denominator is zero. Monthly
 rates use pooled record counts, rather than averaging rehearsal percentages.
 Existing assignment records remain historical evidence even if the participant's
@@ -781,8 +787,8 @@ reads. Records must belong to a member of the rehearsal's ministry.
 
 `recent_rehearsals` contains at most five completed rehearsals across all dates,
 ordered by `start_at DESC, id DESC`, including zero-participant rehearsals and
-those with only unresolved statuses. Each item includes `rehearsal_id`, `name`,
-`ministry`, local `rehearsal_date`, `total_participants`, the five status counts,
+those with missing check-ins reported as ABSENT. Each item includes `rehearsal_id`, `name`,
+`ministry`, local `rehearsal_date`, `total_participants`, the three status counts,
 and `attendance_rate` using the same formula for that rehearsal's records.
 
 Every admin query applies the existing active ministry membership visibility
@@ -793,3 +799,70 @@ profile continues to list all eligible memberships regardless of the filter.
 Run `.venv/bin/python -m unittest discover -s tests -p test_dashboard.py -v`
 for dashboard contracts and `.venv/bin/python -m unittest discover -s tests`
 for the regression suite.
+
+
+### Effective attendance and API compatibility
+
+All individual attendance reads (member rehearsal lists/details, admin participant
+lists, participant details returned by rehearsal updates, and dashboard recent
+attendance) and dashboard SQL summaries share `app/core/attendance.py`:
+
+| Stored status | Recorded arrival | Effective response |
+| --- | --- | --- |
+| Explicit ON_TIME, LATE, ABSENT | Any | Preserve recorded status |
+| Historical JUSTIFIED | Any | Preserve JUSTIFIED as a legacy-only read value |
+| NULL | At or before start + tolerance | ON_TIME |
+| NULL | After start + tolerance | LATE |
+| NULL | None, before end_at | null (pending) |
+| NULL | None, at or after end_at | ABSENT |
+| No assignment row | None | No participant; never synthesize an absence |
+
+Recorded arrivals with NULL statuses are classified by tolerance even for legacy
+arrivals after completion; this preserves evidence of arrival without rewriting
+history. New QR check-ins cannot occur at or after `end_at`. A NULL pending value
+is not an enum member. No UNRESOLVED enum exists. Creation and new assignments
+still store NULL status and arrival until check-in. Rehearsal completion is a
+read-time comparison, `end_at <= now`, not a stored state or scheduled write.
+
+Breaking summary contract change: `justified` and `unresolved` fields have been
+removed from `monthly_attendance`, `ministry_attendance`, and `recent_rehearsals`.
+Totals still include every eligible assignment record; historical JUSTIFIED means
+the three displayed status counts can sum to less than the total. Individual
+responses retain the existing JUSTIFIED literal solely for historical compatibility.
+Do not relabel it as pending, ABSENT, or ON_TIME. Clients must tolerate that legacy
+read value until a separate data migration policy is agreed. There is no public
+status-writing API; check-in only writes ON_TIME or LATE and its response schema
+allows only those values. The database enum remains unchanged.
+
+Example individual attendance fragments:
+
+```json
+{"attendance_status": null, "arrival_at": null}
+```
+
+```json
+{"attendance_status": "ABSENT", "arrival_at": null}
+```
+
+```json
+{"attendance_status": "JUSTIFIED", "arrival_at": null}
+```
+
+Example personal summary (one on-time check-in and one inferred absence):
+
+```json
+{
+  "month": "2026-11",
+  "timezone": "America/Lima",
+  "total_completed_assigned_rehearsals": 2,
+  "on_time": 1,
+  "late": 0,
+  "absent": 1,
+  "attendance_rate": 50.0,
+  "punctuality_rate": 100.0
+}
+```
+
+Reads never persist effective statuses. No migrations, backfills, schedulers, or
+new endpoints are required. Existing ministry visibility, membership checks,
+participant totals, and assignment/deletion protections remain unchanged.

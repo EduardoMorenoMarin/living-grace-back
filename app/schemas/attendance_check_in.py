@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
@@ -13,5 +14,5 @@ class AttendanceCheckIn(BaseModel):
 
 class AttendanceCheckInResponse(BaseModel):
     rehearsal_id: int
-    attendance_status: AttendanceStatus
+    attendance_status: Literal[AttendanceStatus.ON_TIME, AttendanceStatus.LATE]
     arrival_at: datetime

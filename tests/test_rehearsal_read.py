@@ -161,7 +161,7 @@ class RehearsalReadTests(unittest.TestCase):
             {"ministry_member_id": 203, "user_id": 102, "first_name": "Regular", "last_name": "Last",
              "functions": ["Teclado", "Vocalista"], "arrival_at": body["participants"][0]["arrival_at"], "attendance_status": "ON_TIME"},
             {"ministry_member_id": 206, "user_id": 104, "first_name": "OtherParticipant", "last_name": "Last",
-             "functions": [], "arrival_at": None, "attendance_status": None},
+             "functions": [], "arrival_at": None, "attendance_status": "ABSENT"},
         ])
         self.assertNotIn("username", response.text)
         self.assertIsNotNone(body["participants"][0]["arrival_at"])
@@ -201,7 +201,7 @@ class RehearsalReadTests(unittest.TestCase):
         ):
             with self.subTest(status=status, arrival=recorded_arrival):
                 self.change(RehearsalAttendance, 401, attendance_status=status, arrival_at=recorded_arrival)
-                expected = {"attendance_status": status.value if status else None,
+                expected = {"attendance_status": status.value if status else ("ON_TIME" if recorded_arrival else "ABSENT"),
                             "arrival_at": recorded_arrival.replace(tzinfo=None).isoformat() if recorded_arrival else None}
                 detail = self.get(301)
                 self.assertEqual(detail.status_code, 200, detail.text)
@@ -217,7 +217,7 @@ class RehearsalReadTests(unittest.TestCase):
         second = self.get(limit=1, offset=1).json()
         self.assertEqual(second["total"], 2)
         self.assertEqual(second["items"][0]["id"], 302)
-        self.assertIsNone(second["items"][0]["attendance_status"])
+        self.assertEqual(second["items"][0]["attendance_status"], "ABSENT")
         self.assertIsNone(second["items"][0]["arrival_at"])
         self.assertEqual(self.get(limit=1, offset=2).json(), {"items": [], "total": 2})
 

@@ -87,10 +87,10 @@ class DashboardTests(unittest.TestCase):
         })
         self.assertEqual(body["monthly_attendance"], {
             "month": "2026-11", "timezone": "America/Lima", "total_completed_assigned_rehearsals": 6,
-            "on_time": 1, "late": 1, "absent": 1, "justified": 1, "unresolved": 2,
-            "attendance_rate": 66.67, "punctuality_rate": 50.0,
+            "on_time": 2, "late": 1, "absent": 2,
+            "attendance_rate": 60.0, "punctuality_rate": 66.67,
         })
-        self.assertEqual([r["rehearsal_id"] for r in body["recent_attendance"]], completed[3::-1])
+        self.assertEqual([r["rehearsal_id"] for r in body["recent_attendance"]], completed[:0:-1])
         self.assertEqual([r["rehearsal_id"] for r in body["upcoming_rehearsals"]], upcoming[:5])
         self.assertEqual(body["next_rehearsal"], body["upcoming_rehearsals"][0])
         for secret in ("password_hash", "private-hash", "participants", "OtherParticipant", "18:23"):
@@ -202,18 +202,18 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(body["ministry_attendance"], {
             "month": "2026-11", "timezone": "America/Lima", "total_rehearsals": 3,
             "completed_rehearsals": 2, "total_members": 3, "total_attendance_records": 5,
-            "on_time": 1, "late": 1, "absent": 1, "justified": 1, "unresolved": 1,
-            "attendance_rate": 66.67, "punctuality_rate": 50.0,
+            "on_time": 1, "late": 1, "absent": 2,
+            "attendance_rate": 50.0, "punctuality_rate": 50.0,
         })
         self.assertEqual(body["recent_rehearsals"], [
             {"rehearsal_id": rehearsal, "ministry": {"id": 11, "name": "Ministry 11"},
              "name": f"Rehearsal {rehearsal}", "rehearsal_date": "2026-11-14",
              "total_participants": 4, "on_time": 1, "late": 1, "absent": 1,
-             "justified": 1, "unresolved": 0, "attendance_rate": 66.67},
+             "attendance_rate": 66.67},
             {"rehearsal_id": unresolved, "ministry": {"id": 11, "name": "Ministry 11"},
              "name": f"Rehearsal {unresolved}", "rehearsal_date": "2026-11-13",
-             "total_participants": 1, "on_time": 0, "late": 0, "absent": 0,
-             "justified": 0, "unresolved": 1, "attendance_rate": None},
+             "total_participants": 1, "on_time": 0, "late": 0, "absent": 1,
+             "attendance_rate": 0.0},
         ])
         self.assertEqual(body["next_rehearsal"]["rehearsal_id"], future)
         other = self.body(ministry_id=12)["ministry_attendance"]
@@ -231,7 +231,7 @@ class DashboardTests(unittest.TestCase):
         summary = body["ministry_attendance"]
         self.assertEqual(summary["total_members"], 4)
         for key in ("total_rehearsals", "completed_rehearsals", "total_attendance_records",
-                    "on_time", "late", "absent", "justified", "unresolved"):
+                    "on_time", "late", "absent"):
             self.assertEqual(summary[key], 0)
         self.assertIsNone(summary["attendance_rate"])
         self.assertIsNone(summary["punctuality_rate"])
@@ -246,7 +246,8 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(body["ministry_attendance"]["total_attendance_records"], 0)
         self.assertEqual(body["recent_rehearsals"][0]["rehearsal_id"], rehearsal)
         self.assertEqual(body["recent_rehearsals"][0]["total_participants"], 0)
-        self.assertEqual(body["recent_rehearsals"][0]["unresolved"], 0)
+        self.assertNotIn("unresolved", str(body))
+        self.assertNotIn("justified", str(body))
 
     def test_admin_month_boundaries_completed_cutoff_and_recent_order(self):
         outside = self.add(datetime(2026, 11, 1, 4, 59, tzinfo=UTC), AttendanceStatus.ABSENT)
@@ -294,7 +295,7 @@ class DashboardTests(unittest.TestCase):
     def test_empty_dashboard_has_zero_counts_null_rates_and_no_next(self):
         body = self.body()
         summary = body["monthly_attendance"]
-        for key in ("total_completed_assigned_rehearsals", "on_time", "late", "absent", "justified", "unresolved"):
+        for key in ("total_completed_assigned_rehearsals", "on_time", "late", "absent"):
             self.assertEqual(summary[key], 0)
         self.assertIsNone(summary["attendance_rate"])
         self.assertIsNone(summary["punctuality_rate"])
@@ -302,14 +303,14 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(body["upcoming_rehearsals"], [])
         self.assertIsNone(body["next_rehearsal"])
 
-    def test_justified_and_null_records_never_become_absences(self):
+    def test_historical_justified_is_preserved_and_completed_null_is_absent(self):
         self.add(self.now - timedelta(days=2), AttendanceStatus.JUSTIFIED)
         self.add(self.now - timedelta(days=1))
         summary = self.body()["monthly_attendance"]
-        self.assertEqual(summary["justified"], 1)
-        self.assertEqual(summary["unresolved"], 1)
-        self.assertEqual(summary["absent"], 0)
-        self.assertIsNone(summary["attendance_rate"])
+        self.assertNotIn("justified", summary)
+        self.assertNotIn("unresolved", summary)
+        self.assertEqual(summary["absent"], 1)
+        self.assertEqual(summary["attendance_rate"], 0.0)
         self.assertIsNone(summary["punctuality_rate"])
 
     def test_completed_and_upcoming_cutoffs_and_recent_order_are_deterministic(self):

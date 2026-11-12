@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.core.attendance import attendance_rates
 from app.core.exceptions import DashboardReadError, MinistryNotFound
 from app.models.user import User
 from app.repositories.dashboard import DashboardRepository
@@ -60,8 +61,6 @@ class DashboardService:
             upcoming = self.repository.upcoming(user.id, ministry_id, now, is_admin=viewer.is_admin)
         except SQLAlchemyError:
             raise DashboardReadError from None
-        attended = counts["on_time"] + counts["late"]
-        eligible = attended + counts["absent"]
         cards = [DashboardRehearsal(**self._rehearsal(row), name=row["name"],
                                     description=row["description"], tolerance_minutes=row["tolerance_minutes"])
                  for row in upcoming]
@@ -77,16 +76,15 @@ class DashboardService:
                 **shared,
                 ministry_attendance=MinistryAttendance(
                     month=month_start.strftime("%Y-%m"), timezone=self.timezone.key, **counts,
-                    attendance_rate=round(attended / eligible * 100, 2) if eligible else None,
-                    punctuality_rate=round(counts["on_time"] / attended * 100, 2) if attended else None,
+                    **attendance_rates(counts),
                 ),
                 recent_rehearsals=[RecentRehearsal(
                     rehearsal_id=row["id"], name=row["name"],
                     ministry={"id": row["ministry_id"], "name": row["ministry_name"]},
                     rehearsal_date=self._aware(row["start_at"]).astimezone(self.timezone).date(),
                     total_participants=row["total_attendance_records"],
-                    **{key: row[key] for key in ("on_time", "late", "absent", "justified", "unresolved")},
-                    attendance_rate=self._attendance_rate(row),
+                    **{key: row[key] for key in ("on_time", "late", "absent")},
+                    attendance_rate=attendance_rates(row)["attendance_rate"],
                 ) for row in recent],
             )
         return DashboardResponse(
@@ -94,9 +92,8 @@ class DashboardService:
             monthly_attendance=MonthlyAttendance(
                 month=month_start.strftime("%Y-%m"), timezone=self.timezone.key,
                 total_completed_assigned_rehearsals=counts["total"],
-                **{key: counts[key] for key in ("on_time", "late", "absent", "justified", "unresolved")},
-                attendance_rate=round(attended / eligible * 100, 2) if eligible else None,
-                punctuality_rate=round(counts["on_time"] / attended * 100, 2) if attended else None,
+                **{key: counts[key] for key in ("on_time", "late", "absent")},
+                **attendance_rates(counts),
             ),
             recent_attendance=[RecentAttendance(
                 **self._rehearsal(row), rehearsal_date=self._aware(row["start_at"]).astimezone(self.timezone).date(),
@@ -104,9 +101,3 @@ class DashboardService:
                 arrival_at=self._aware(row["arrival_at"]) if row["arrival_at"] is not None else None,
             ) for row in recent],
         )
-
-    @staticmethod
-    def _attendance_rate(row):
-        attended = row["on_time"] + row["late"]
-        eligible = attended + row["absent"]
-        return round(attended / eligible * 100, 2) if eligible else None

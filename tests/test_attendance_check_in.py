@@ -118,6 +118,31 @@ class AttendanceCheckInTests(unittest.TestCase):
             self.assertEqual(self.attendance().attendance_status, status)
             self.assertEqual(self.attendance().arrival_at is None, arrival is None)
 
+    def test_rehearsal_completion_rejects_even_with_open_qr(self):
+        self.change(RehearsalQrSession, 801, expires_at=self.now + timedelta(hours=2))
+        for end in (self.now, self.now - timedelta(microseconds=1)):
+            with self.subTest(end=end):
+                self.change(Rehearsal, 301, end_at=end)
+                response = self.check_in()
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertIsNone(self.attendance().attendance_status)
+                self.assertIsNone(self.attendance().arrival_at)
+
+    def test_completion_revalidated_after_locks_and_write(self):
+        end = self.now + timedelta(seconds=1)
+        self.change(Rehearsal, 301, end_at=end)
+        self.change(RehearsalQrSession, 801, expires_at=end + timedelta(hours=1))
+        for times in ((self.now, end), (self.now, self.now, end)):
+            with self.subTest(times=times), patch("app.services.attendance_check_in.utc_now", side_effect=times):
+                response = self.check_in()
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertIsNone(self.attendance().attendance_status)
+                self.assertIsNone(self.attendance().arrival_at)
+        with patch("app.services.attendance_check_in.utc_now", return_value=end - timedelta(microseconds=1)):
+            response = self.check_in()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["attendance_status"], "LATE")
+
     def test_repeated_check_in_conflicts(self):
         self.assertEqual(self.check_in().status_code, 200)
         before = self.attendance().arrival_at

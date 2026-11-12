@@ -1,8 +1,9 @@
 from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
 
+from app.core.attendance import REPORTABLE_STATUSES, effective_status
 from app.models import Function, Ministry, MinistryMember, MinistryMemberFunction, Rehearsal, RehearsalAttendance
-from app.models.enums import AttendanceStatus, FunctionStatus, MembershipStatus, MinistryStatus
+from app.models.enums import FunctionStatus, MembershipStatus, MinistryStatus
 from app.repositories.rehearsal_read import RehearsalReadRepository
 
 
@@ -33,9 +34,9 @@ class DashboardRepository:
             .order_by(Ministry.id, Function.id)
         ).mappings().all()
 
-    def _assigned(self, user_id: int, ministry_id: int | None):
+    def _assigned(self, user_id: int, ministry_id: int | None, now):
         # Attendance statistics always use personal participant visibility.
-        statement = self.rehearsals._member_metadata(user_id).where(
+        statement = self.rehearsals._member_metadata(user_id, now).where(
             self.rehearsals._visibility(user_id, False),
         )
         assigned = statement.subquery()
@@ -44,25 +45,24 @@ class DashboardRepository:
         return assigned
 
     def monthly_counts(self, user_id, ministry_id, month_start, month_end, now):
-        assigned = self._assigned(user_id, ministry_id)
+        assigned = self._assigned(user_id, ministry_id, now)
         counts = [func.count().label("total")]
         counts.extend(func.count(case((assigned.c.attendance_status == status, 1))).label(status.value.lower())
-                      for status in AttendanceStatus)
-        counts.append(func.count(case((assigned.c.attendance_status.is_(None), 1))).label("unresolved"))
+                      for status in REPORTABLE_STATUSES)
         return self.db.execute(select(*counts).select_from(assigned).where(
             assigned.c.start_at >= month_start, assigned.c.start_at < month_end,
             assigned.c.end_at <= now,
         )).mappings().one()
 
     def recent(self, user_id, ministry_id, now):
-        assigned = self._assigned(user_id, ministry_id)
+        assigned = self._assigned(user_id, ministry_id, now)
         return self.db.execute(select(assigned).where(
             assigned.c.end_at <= now, assigned.c.attendance_status.is_not(None),
         ).order_by(assigned.c.start_at.desc(), assigned.c.id.desc()).limit(5)).mappings().all()
 
     def upcoming(self, user_id, ministry_id, now, *, is_admin: bool):
         statement = (self.rehearsals._metadata() if is_admin
-                     else self.rehearsals._member_metadata(user_id)).where(
+                     else self.rehearsals._member_metadata(user_id, now)).where(
             self.rehearsals._visibility(user_id, is_admin),
         )
         visible = statement.subquery()
@@ -81,17 +81,16 @@ class DashboardRepository:
 
     def _attendance_totals(self, visible, now):
         # Preserve historical assignments, including members who later became inactive.
-        # Missing assignment rows are not absences; null statuses are unresolved.
-        records = select(RehearsalAttendance).join(
+        # Only real assignment records contribute to totals or status counts.
+        records = select(RehearsalAttendance.id, RehearsalAttendance.rehearsal_id,
+                         effective_status(now)).join(
             MinistryMember, MinistryMember.id == RehearsalAttendance.ministry_member_id,
         ).join(Rehearsal, Rehearsal.id == RehearsalAttendance.rehearsal_id).where(
             MinistryMember.ministry_id == Rehearsal.ministry_id,
         ).subquery()
         counts = [func.count(records.c.id).label("total_attendance_records")]
         counts.extend(func.count(case((records.c.attendance_status == status, 1))).label(status.value.lower())
-                      for status in AttendanceStatus)
-        counts.append(func.count(case((and_(records.c.id.is_not(None),
-                                            records.c.attendance_status.is_(None)), 1))).label("unresolved"))
+                      for status in REPORTABLE_STATUSES)
         return select(visible, *counts).outerjoin(records, and_(
             records.c.rehearsal_id == visible.c.id, visible.c.end_at <= now,
         )).group_by(*visible.c).subquery()
@@ -119,7 +118,7 @@ class DashboardRepository:
             func.count(case((totals.c.end_at <= now, 1))).label("completed_rehearsals"),
             members.label("total_members"),
             *[func.coalesce(func.sum(totals.c[key]), 0).label(key) for key in
-              ("total_attendance_records", "on_time", "late", "absent", "justified", "unresolved")],
+              ("total_attendance_records", "on_time", "late", "absent")],
         ).select_from(totals)).mappings().one()
 
     def recent_rehearsals(self, user_id, ministry_id, now):
