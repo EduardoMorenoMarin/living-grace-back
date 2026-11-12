@@ -944,7 +944,8 @@ extensible without introducing a PostgreSQL enum. Composite indexes
 and newest-first pagination.
 
 Listing, unread count, individual mark-read, and bulk mark-read are implemented.
-There are no event producers or WebSocket connections. Tests create rows
+Authenticated WebSocket delivery is available as described below; no event
+producers are connected. Tests create rows
 directly; no production fixtures or notifications are inserted automatically.
 
 Run `.venv/bin/python -m unittest discover -s tests -p test_notifications.py`.
@@ -1039,3 +1040,160 @@ have arrived. Authentication failures return 401, mandatory password change
 returns 403, and database errors return a sanitized 500
 (`Unable to update notifications.`). No database schema changes, migrations,
 WebSockets, or notification producers are introduced.
+
+
+### Real-time notifications: WebSocket
+
+`WS /ws/notifications` is a user-scoped server-to-client stream. Existing HTTP
+notification endpoints retain their behavior. PostgreSQL remains the source of
+truth; opening a socket and receiving events never mark notifications as read.
+There are no rehearsal, membership, or attendance producers in this step.
+
+#### Authentication flow
+
+Login currently returns a bearer JWT, with no HttpOnly authentication cookie.
+Browser WebSocket clients cannot attach an Authorization header. To avoid
+changing login/cookie semantics or placing the JWT in a WebSocket URL, the minimal
+supporting endpoint `POST /notifications/ws-ticket` uses the existing bearer
+`get_current_user` dependency. It requires no body or client user ID and returns:
+
+```json
+{"ticket": "<opaque-single-use-ticket>", "expires_in": 60}
+```
+
+Ticket responses include `Cache-Control: no-store`. Tickets use 256 bits of
+randomness; the process stores a ticket hash and its bearer credential binding.
+Tickets expire after 60 seconds, are atomically consumed once, and never extend
+the original JWT's lifetime. The bounded in-memory store rejects issuance with
+503 when at capacity. Invalid/stale JWTs return 401 and mandatory password changes
+return 403, using existing HTTP authentication rules.
+
+Connect with the subprotocols `living-grace.notifications` and `ticket.<ticket>`.
+The server selects only `living-grace.notifications`, never echoes the ticket,
+and validates the original JWT again against the current password hash before
+accepting. Password reset/change revokes outstanding tickets. Ticket replay,
+expired/invalid credentials, mandatory password change, missing/untrusted Origin,
+and query parameters are rejected before acceptance (policy code 1008; a real
+server may expose handshake rejection as HTTP 403).
+
+The Origin must exactly match configured `FRONTEND_ORIGIN` (same trusted frontend
+as CORS). No wildcard, missing Origin, or `null` Origin is accepted. Cookies and
+JWT query parameters are not accepted for socket authentication. Use HTTPS for
+ticket requests and WSS for sockets in production. Treat ticket response bodies,
+Authorization headers, and Sec-WebSocket-Protocol request headers as credentials;
+do not log them at the application, proxy, or tracing layer.
+
+#### Browser example and lifecycle
+
+This example assumes the existing login flow provides `accessToken`. On each
+reconnection obtain a fresh ticket; a consumed or expired ticket cannot be reused.
+`refreshNotifications()` must fetch both `/notifications` and
+`/notifications/unread-count` with the same bearer Authorization header.
+
+```javascript
+function subscribeToNotifications(apiUrl, accessToken, refreshNotifications, onAuthRequired) {
+  let socket, retry, stopped = false, delay = 1000;
+  const schedule = () => {
+    if (!stopped) {
+      retry = setTimeout(connect, delay);
+      delay = Math.min(delay * 2, 30000);
+    }
+  };
+  async function connect() {
+    try {
+      const response = await fetch(new URL('/notifications/ws-ticket', apiUrl), {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        cache: 'no-store'
+      });
+      if (response.status === 401 || response.status === 403) {
+        stopped = true;
+        onAuthRequired(); // refresh credentials or finish mandatory password change
+        return;
+      }
+      if (!response.ok) throw new Error('Ticket request failed');
+      const { ticket } = await response.json();
+      if (stopped) return;
+      const url = new URL('/ws/notifications', apiUrl);
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+      socket = new WebSocket(url, ['living-grace.notifications', `ticket.${ticket}`]);
+      socket.onopen = () => { delay = 1000; refreshNotifications(); };
+      socket.onmessage = ({ data }) => {
+        const event = JSON.parse(data);
+        if (event.type === 'notification.created') refreshNotifications();
+      };
+      socket.onerror = () => socket.close();
+      socket.onclose = schedule;
+    } catch {
+      schedule();
+    }
+  }
+  connect();
+  return () => { stopped = true; clearTimeout(retry); socket?.close(); };
+}
+```
+
+Several tabs/devices can connect for the same user. Connections are grouped by
+server-authenticated user ID, and notifications are never broadcast globally.
+Client messages cannot choose a recipient or publish events; application messages
+close the connection with 1008. Disconnects remove only that socket. Credentials
+are revalidated before each delivery and every 30 seconds while idle; password
+reset, mandatory password change, or JWT expiration closes invalid connections.
+The brief interval is not a replacement for revalidation at delivery time.
+
+Example event:
+
+```json
+{
+  "type": "notification.created",
+  "data": {
+    "id": 42,
+    "notification_type": "REHEARSAL_ASSIGNED",
+    "title": "New rehearsal",
+    "message": "You have been assigned to a rehearsal.",
+    "resource_type": "rehearsal",
+    "resource_id": 301,
+    "is_read": false,
+    "created_at": "2026-11-12T21:00:00Z"
+  }
+}
+```
+
+#### Future producer integration and reliability
+
+`NotificationDeliveryService.publish_created(notification_id)` is the reusable
+async delivery entry point, assembled by `get_notification_delivery_service()`.
+Future producers must persist and COMMIT the notification before calling it.
+The service opens an independent database session, reads the committed row and
+its owner, builds the explicit event schema, and sends only to that owner's
+connections. PostgreSQL's default READ COMMITTED isolation prevents an uncommitted
+insert from being delivered even if called prematurely; premature calls are not
+queued or retried. Do not inject a producer's active write session as the delivery
+session factory. There are deliberately no SQLAlchemy/domain event hooks yet.
+
+Broken or slow connections are removed without failing other recipients or the
+producer's committed transaction. Sends are serialized per connection and have
+a five-second timeout. Offline users still retrieve persisted notifications from
+`GET /notifications`. Delivery is best effort: there is no replay, durable queue,
+or exactly-once guarantee, and clients should tolerate duplicate notification IDs.
+Always refetch the list and unread count after connecting/reconnecting, including
+when a connection died before receiving an event. Read mutations remain HTTP-only.
+
+#### Deployment
+
+Install `requirements.txt` (now includes `websockets`) and run a single process:
+
+```bash
+uvicorn app.main:app --workers 1 --ws auto
+```
+
+Configure the reverse proxy to forward WebSocket upgrades, Origin, and subprotocol
+headers, with suitable idle timeouts. Ticket storage and the connection registry
+are process-local and reset on restart. Multiple workers or instances require a
+shared single-use ticket store AND a shared event broker such as Redis Pub/Sub
+(or equivalent routing); sticky routing alone is not a complete delivery design.
+Redis, Celery, background producers, and schema migrations are not introduced.
+
+Run `.venv/bin/python -m unittest discover -s tests -p test_notification_realtime.py`
+for socket/ticket/commit-isolation coverage and the existing notification tests
+for HTTP regressions.

@@ -10,6 +10,10 @@ class NotificationRepository:
     def __init__(self, db: Session):
         self.db = db
 
+    def get_for_delivery(self, notification_id: int) -> Notification | None:
+        # Internal server-only lookup; the persisted row determines the recipient.
+        return self.db.get(Notification, notification_id)
+
     def unread_count(self, user_id: int) -> int:
         return self.db.scalar(select(func.count()).select_from(Notification).where(
             Notification.user_id == user_id, Notification.is_read.is_(False),
