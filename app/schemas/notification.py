@@ -31,3 +31,7 @@ class NotificationPage(BaseModel):
     limit: int = Field(ge=1, le=100)
     offset: int = Field(ge=0)
     items: list[NotificationItem]
+
+
+class NotificationUnreadCount(BaseModel):
+    unread_count: int = Field(ge=0)

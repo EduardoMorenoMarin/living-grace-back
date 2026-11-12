@@ -174,6 +174,108 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(utc.created_at.utcoffset(), timedelta(0))
 
 
+class NotificationUnreadCountTests(unittest.TestCase):
+    setUp = NotificationTests.setUp
+    login = NotificationTests.login
+    change = NotificationTests.change
+    add = NotificationTests.add
+
+    def get(self, **params):
+        return self.client.get("/notifications/unread-count", headers=self.headers, params=params)
+
+    def assert_count(self, expected, **params):
+        response = self.get(**params)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(response.json(), {"unread_count": expected})
+
+    def test_empty_and_all_read_return_zero(self):
+        self.assert_count(0)
+        self.add(1, is_read=True)
+        self.add(2, is_read=True)
+        self.assert_count(0)
+
+    def test_mixed_statuses_count_all_unread_without_pagination(self):
+        for identifier in range(1, 31):
+            self.add(identifier, is_read=identifier % 3 == 0)
+        self.assert_count(20, limit=1, offset=100, is_read=True)
+        listing = self.client.get("/notifications", headers=self.headers,
+                                  params={"is_read": "false", "limit": 1})
+        self.assertEqual(listing.status_code, 200, listing.text)
+        self.assertEqual(listing.json()["total"], 20)
+        self.assertEqual(len(listing.json()["items"]), 1)
+
+    def test_user_and_admin_counts_are_isolated_from_client_parameters(self):
+        self.add(1, user_id=102)
+        self.add(2, user_id=102)
+        self.add(3, user_id=101)
+        self.add(4, user_id=101, is_read=True)
+        self.add(5, user_id=104)
+        for user, expected in ((102, 2), (101, 1), (104, 1), (103, 0)):
+            with self.subTest(user=user):
+                self.login(user)
+                self.assert_count(expected, user_id=102, role="ADMIN")
+
+    def test_missing_invalid_expired_and_stale_tokens_are_rejected_before_count(self):
+        expired = jwt.encode({"sub": "102", "exp": 1, "pwdv": "stale"},
+                             settings.JWT_SECRET_KEY.get_secret_value(), algorithm=settings.JWT_ALGORITHM)
+        original = self.headers
+        for headers in ({}, {"Authorization": "Bearer invalid"}, {"Authorization": f"Bearer {expired}"}):
+            with self.subTest(headers=headers):
+                self.headers = headers
+                with patch.object(NotificationRepository, "unread_count") as query:
+                    self.assertEqual(self.get().status_code, 401)
+                query.assert_not_called()
+        self.headers = original
+        self.change(User, 102, password_hash="changed-hash")
+        with patch.object(NotificationRepository, "unread_count") as query:
+            self.assertEqual(self.get().status_code, 401)
+        query.assert_not_called()
+
+    def test_mandatory_password_change_blocks_count(self):
+        self.change(User, 102, must_change_password=True)
+        with patch.object(NotificationRepository, "unread_count") as query:
+            response = self.get()
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["detail"], "Password change required.")
+        query.assert_not_called()
+
+    def test_one_count_query_and_no_notification_rows_loaded_or_modified(self):
+        self.add(1)
+        statements = []
+        def record(conn, cursor, statement, parameters, context, many):
+            statements.append(statement)
+        self.db.expire_all()
+        event.listen(self.engine, "before_cursor_execute", record)
+        try:
+            with patch.object(self.db, "scalars", side_effect=AssertionError("Must not load notification rows")):
+                self.assert_count(1)
+        finally:
+            event.remove(self.engine, "before_cursor_execute", record)
+        self.assertEqual(len(statements), 2)  # authenticated user and COUNT(*)
+        self.assertTrue(all(sql.lstrip().upper().startswith("SELECT") for sql in statements))
+        notification_queries = [sql for sql in statements if "FROM notifications" in sql]
+        self.assertEqual(len(notification_queries), 1)
+        self.assertIn("count(*)", notification_queries[0].lower())
+        self.db.expire_all()
+        self.assertFalse(self.db.get(Notification, 1).is_read)
+
+    def test_database_failure_is_sanitized(self):
+        with patch.object(self.db, "scalar", side_effect=SQLAlchemyError("private database details")):
+            response = self.get()
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json(), {"detail": "Unable to retrieve notifications."})
+
+    def test_unread_count_schema_is_explicit_and_nonnegative(self):
+        from app.schemas.notification import NotificationUnreadCount
+        self.assertEqual(NotificationUnreadCount(unread_count=5).model_dump(), {"unread_count": 5})
+        with self.assertRaises(ValidationError):
+            NotificationUnreadCount(unread_count=-1)
+        schema = self.client.get("/openapi.json").json()
+        parameters = schema["paths"]["/notifications/unread-count"]["get"].get("parameters", [])
+        self.assertEqual(parameters, [])
+
+
 @unittest.skipUnless(os.environ.get("NOTIFICATIONS_TEST_DATABASE_URL"), "opt-in isolated PostgreSQL migration test")
 class PostgreSQLNotificationMigrationTests(unittest.TestCase):
     def test_migration_defaults_indexes_foreign_key_and_orm(self):

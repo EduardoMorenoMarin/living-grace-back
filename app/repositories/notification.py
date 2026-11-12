@@ -8,6 +8,11 @@ class NotificationRepository:
     def __init__(self, db: Session):
         self.db = db
 
+    def unread_count(self, user_id: int) -> int:
+        return self.db.scalar(select(func.count()).select_from(Notification).where(
+            Notification.user_id == user_id, Notification.is_read.is_(False),
+        )) or 0
+
     def list_for_user(self, user_id: int, limit: int, offset: int, is_read: bool | None):
         conditions = [Notification.user_id == user_id]
         if is_read is not None:

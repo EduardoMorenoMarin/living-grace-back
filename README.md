@@ -943,8 +943,8 @@ extensible without introducing a PostgreSQL enum. Composite indexes
 `ix_notifications_user_is_read_created_at_id` support ownership, filtering,
 and newest-first pagination.
 
-Only listing is implemented in this step. There are no event producers, unread
-count endpoint, mark-read endpoints, or WebSocket connections. Tests create rows
+Listing and unread count are implemented. There are no event producers,
+mark-read endpoints, or WebSocket connections. Tests create rows
 directly; no production fixtures or notifications are inserted automatically.
 
 Run `.venv/bin/python -m unittest discover -s tests -p test_notifications.py`.
@@ -952,3 +952,25 @@ To additionally execute the SQL migration and verify defaults, indexes, foreign
 keys, and ORM queries on PostgreSQL, set `NOTIFICATIONS_TEST_DATABASE_URL` to a
 scratch SQLAlchemy PostgreSQL URL. That opt-in test creates and removes only a
 unique test schema; it never falls back to the application's `DATABASE_URL`.
+
+
+### Notifications: unread count
+
+`GET /notifications/unread-count` uses the same JWT `get_current_user` dependency
+as notification listing, including stale-token checks and mandatory password
+changes. It returns only the authenticated user's notifications where `is_read`
+is false. Admins have no cross-user override; client-supplied user IDs, roles,
+filters, or pagination cannot change the count. This endpoint has no query
+parameters and uses a single SQL `COUNT(*)`, without loading notification rows
+or changing their read status. The response includes `Cache-Control: no-store`.
+
+```json
+{"unread_count": 5}
+```
+
+No unread notifications returns `{"unread_count": 0}`. Authentication failures
+return 401; mandatory password change returns 403; database errors return a
+sanitized 500 (`Unable to retrieve notifications.`). The static route is declared
+before future routes containing notification ID parameters. The existing
+user/read-status index supports the query; no schema change or migration is
+needed. `GET /notifications` retains its existing pagination and filtering.

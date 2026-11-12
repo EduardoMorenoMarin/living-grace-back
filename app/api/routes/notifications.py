@@ -6,11 +6,25 @@ from app.core.exceptions import NotificationReadError
 from app.dependencies.auth import get_current_user
 from app.dependencies.notification import get_notification_service
 from app.models.user import User
-from app.schemas.notification import NotificationPage
+from app.schemas.notification import NotificationPage, NotificationUnreadCount
 from app.services.notification import NotificationService
 
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
+
+
+# Keep static paths before future routes with notification ID parameters.
+@router.get("/unread-count", response_model=NotificationUnreadCount)
+def get_unread_count(
+    user: Annotated[User, Depends(get_current_user)],
+    service: Annotated[NotificationService, Depends(get_notification_service)],
+    response: Response,
+) -> NotificationUnreadCount:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return service.unread_count(user.id)
+    except NotificationReadError:
+        raise HTTPException(status_code=500, detail="Unable to retrieve notifications.") from None
 
 
 @router.get("", response_model=NotificationPage)
