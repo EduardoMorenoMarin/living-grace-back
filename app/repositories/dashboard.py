@@ -34,7 +34,7 @@ class DashboardRepository:
         ).mappings().all()
 
     def _assigned(self, user_id: int, ministry_id: int | None):
-        # Always use personal participant visibility, even for global admins.
+        # Attendance statistics always use personal participant visibility.
         statement = self.rehearsals._member_metadata(user_id).where(
             self.rehearsals._visibility(user_id, False),
         )
@@ -60,8 +60,15 @@ class DashboardRepository:
             assigned.c.end_at <= now, assigned.c.attendance_status.is_not(None),
         ).order_by(assigned.c.start_at.desc(), assigned.c.id.desc()).limit(5)).mappings().all()
 
-    def upcoming(self, user_id, ministry_id, now):
-        assigned = self._assigned(user_id, ministry_id)
-        return self.db.execute(select(assigned).where(
-            assigned.c.start_at >= now,
-        ).order_by(assigned.c.start_at, assigned.c.id).limit(5)).mappings().all()
+    def upcoming(self, user_id, ministry_id, now, *, is_admin: bool):
+        statement = (self.rehearsals._metadata() if is_admin
+                     else self.rehearsals._member_metadata(user_id)).where(
+            self.rehearsals._visibility(user_id, is_admin),
+        )
+        visible = statement.subquery()
+        statement = select(visible).where(visible.c.start_at >= now)
+        if ministry_id is not None:
+            statement = statement.where(visible.c.ministry_id == ministry_id)
+        return self.db.execute(statement.order_by(
+            visible.c.start_at.asc(), visible.c.id.asc(),
+        ).limit(5)).mappings().all()
