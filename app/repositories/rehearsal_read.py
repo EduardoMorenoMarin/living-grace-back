@@ -75,7 +75,7 @@ class RehearsalReadRepository:
                 RehearsalAttendance.rehearsal_id == Rehearsal.id,
             ).correlate(Rehearsal).scalar_subquery()
             statement = statement.add_columns(count.label("participant_count"))
-        rows = self.db.execute(statement.order_by(Rehearsal.start_at, Rehearsal.id).limit(limit).offset(offset))
+        rows = self.db.execute(statement.order_by(Rehearsal.start_at.desc(), Rehearsal.id).limit(limit).offset(offset))
         return rows.mappings().all(), total or 0
 
     def get_visible(self, user_id: int, is_admin: bool, rehearsal_id: int) -> RowMapping | None:
