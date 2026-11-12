@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
@@ -35,3 +36,8 @@ class NotificationPage(BaseModel):
 
 class NotificationUnreadCount(BaseModel):
     unread_count: int = Field(ge=0)
+
+
+class NotificationReadResponse(BaseModel):
+    id: int = Field(gt=0)
+    is_read: Literal[True]

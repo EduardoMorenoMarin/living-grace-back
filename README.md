@@ -943,8 +943,8 @@ extensible without introducing a PostgreSQL enum. Composite indexes
 `ix_notifications_user_is_read_created_at_id` support ownership, filtering,
 and newest-first pagination.
 
-Listing and unread count are implemented. There are no event producers,
-mark-read endpoints, or WebSocket connections. Tests create rows
+Listing, unread count, and individual mark-read are implemented. There are no
+event producers, bulk mark-read endpoint, or WebSocket connections. Tests create rows
 directly; no production fixtures or notifications are inserted automatically.
 
 Run `.venv/bin/python -m unittest discover -s tests -p test_notifications.py`.
@@ -974,3 +974,33 @@ sanitized 500 (`Unable to retrieve notifications.`). The static route is declare
 before future routes containing notification ID parameters. The existing
 user/read-status index supports the query; no schema change or migration is
 needed. `GET /notifications` retains its existing pagination and filtering.
+
+
+### Notifications: mark one as read
+
+`PATCH /notifications/{notification_id}/read` requires the same JWT
+`get_current_user` dependency as notification listing. The path ID must be a
+positive BIGINT. No request body or query parameters are needed or used for
+ownership; only the authenticated user's ID can select the notification.
+
+Example `PATCH /notifications/42/read` returns HTTP 200 with
+`Cache-Control: no-store`:
+
+```json
+{"id": 42, "is_read": true}
+```
+
+The operation is idempotent: an already-read notification returns the same 200
+response. A single ownership-scoped `UPDATE ... RETURNING` sets `is_read=true`
+and returns the result only after commit succeeds. Database errors roll back
+and return a sanitized 500 (`Unable to update notification.`). A nonexistent
+notification and another user's notification both return the same 404
+(`Notification does not exist.`); admins have no ownership override. Authentication
+failures return 401, mandatory password change returns 403, and invalid IDs
+return 422. The existing static unread-count route remains before dynamic routes.
+
+Subsequent `GET /notifications` responses show `is_read=true`, unread-filtered
+lists omit the notification, and `GET /notifications/unread-count` decreases once
+when an unread notification is marked read. Repeated updates do not decrease it
+again. No database schema changes, migrations, producers, bulk mark-read, or
+WebSockets are introduced.

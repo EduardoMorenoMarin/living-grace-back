@@ -96,3 +96,11 @@ class DashboardReadError(Exception):
 
 class NotificationReadError(Exception):
     pass
+
+
+class NotificationNotFound(Exception):
+    pass
+
+
+class NotificationPersistenceError(Exception):
+    pass

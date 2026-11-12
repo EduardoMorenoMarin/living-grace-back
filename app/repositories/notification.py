@@ -1,6 +1,8 @@
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.core.exceptions import NotificationNotFound, NotificationPersistenceError
 from app.models.notification import Notification
 
 
@@ -12,6 +14,25 @@ class NotificationRepository:
         return self.db.scalar(select(func.count()).select_from(Notification).where(
             Notification.user_id == user_id, Notification.is_read.is_(False),
         )) or 0
+
+    def mark_read(self, user_id: int, notification_id: int):
+        try:
+            row = self.db.execute(update(Notification).where(
+                Notification.id == notification_id, Notification.user_id == user_id,
+            ).values(is_read=True).returning(
+                Notification.id, Notification.is_read,
+            ).execution_options(synchronize_session=False)).mappings().one_or_none()
+            # Match already-read rows too: repeated calls return the same result.
+            if row is None:
+                raise NotificationNotFound
+            self.db.commit()
+            return row
+        except SQLAlchemyError:
+            self.db.rollback()
+            raise NotificationPersistenceError from None
+        except Exception:
+            self.db.rollback()
+            raise
 
     def list_for_user(self, user_id: int, limit: int, offset: int, is_read: bool | None):
         conditions = [Notification.user_id == user_id]
