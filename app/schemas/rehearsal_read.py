@@ -32,7 +32,9 @@ class RehearsalInfo(BaseModel):
 
 
 class MyRehearsalAttendance(BaseModel):
-    attendance_status: AttendanceStatus | None
+    attendance_status: AttendanceStatus | None = Field(
+        description="Effective status; null is pending. JUSTIFIED is read-only historical compatibility."
+    )
     arrival_at: datetime | None
 
 
@@ -55,7 +57,9 @@ class RehearsalParticipant(BaseModel):
     last_name: str
     functions: list[str] = Field(default_factory=list)
     arrival_at: datetime | None
-    attendance_status: AttendanceStatus | None
+    attendance_status: AttendanceStatus | None = Field(
+        description="Effective status; null is pending. JUSTIFIED is read-only historical compatibility."
+    )
 
 
 class AdminRehearsalDetail(RehearsalInfo):

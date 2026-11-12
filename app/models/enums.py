@@ -36,4 +36,5 @@ class AttendanceStatus(str, Enum):
     ON_TIME = "ON_TIME"
     LATE = "LATE"
     ABSENT = "ABSENT"
+    # Legacy read compatibility only; new attendance writes must not use this value.
     JUSTIFIED = "JUSTIFIED"

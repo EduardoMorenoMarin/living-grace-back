@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models.enums import AttendanceStatus, UserStatus
 from app.schemas.rehearsal_read import RehearsalMinistry
@@ -28,8 +28,6 @@ class MonthlyAttendance(BaseModel):
     on_time: int
     late: int
     absent: int
-    justified: int
-    unresolved: int
     attendance_rate: float | None
     punctuality_rate: float | None
 
@@ -50,7 +48,9 @@ class RecentAttendance(BaseModel):
     rehearsal_date: date
     start_at: datetime
     end_at: datetime
-    attendance_status: AttendanceStatus
+    attendance_status: AttendanceStatus = Field(
+        description="Effective status; JUSTIFIED is read-only historical compatibility."
+    )
     arrival_at: datetime | None
 
 
@@ -73,8 +73,6 @@ class MinistryAttendance(BaseModel):
     on_time: int
     late: int
     absent: int
-    justified: int
-    unresolved: int
     attendance_rate: float | None
     punctuality_rate: float | None
 
@@ -88,8 +86,6 @@ class RecentRehearsal(BaseModel):
     on_time: int
     late: int
     absent: int
-    justified: int
-    unresolved: int
     attendance_rate: float | None
 
 

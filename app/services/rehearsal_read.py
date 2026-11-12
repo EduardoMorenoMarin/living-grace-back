@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.exceptions import RehearsalNotFound, RehearsalReadError
-from app.repositories.rehearsal_read import RehearsalReadRepository
+from app.repositories.rehearsal_read import RehearsalReadRepository, utc_now
 from app.schemas.rehearsal_read import (
     AdminRehearsalDetail, AdminRehearsalItem, AdminRehearsalPage,
     MemberRehearsalDetail, MemberRehearsalItem, MyRehearsalAttendance, RehearsalPage, RehearsalParticipant,
@@ -53,7 +53,8 @@ class RehearsalReadService:
 
     def get_visible(self, viewer: RehearsalViewer, rehearsal_id: int) -> AdminRehearsalDetail | MemberRehearsalDetail:
         try:
-            row = self.repository.get_visible(viewer.user_id, viewer.is_admin, rehearsal_id)
+            now = utc_now()
+            row = self.repository.get_visible(viewer.user_id, viewer.is_admin, rehearsal_id, now)
             if row is None:
                 raise RehearsalNotFound
             if not viewer.is_admin:
@@ -61,7 +62,7 @@ class RehearsalReadService:
                     **self._metadata(row), my_attendance=MyRehearsalAttendance(**self._attendance(row)),
                 )
             participants: dict[int, RehearsalParticipant] = {}
-            for participant in self.repository.get_participants(rehearsal_id):
+            for participant in self.repository.get_participants(rehearsal_id, now):
                 member_id = participant["ministry_member_id"]
                 if member_id not in participants:
                     participants[member_id] = RehearsalParticipant(**{
