@@ -6,7 +6,9 @@ from app.core.exceptions import NotificationNotFound, NotificationPersistenceErr
 from app.dependencies.auth import get_current_user
 from app.dependencies.notification import get_notification_service
 from app.models.user import User
-from app.schemas.notification import NotificationPage, NotificationReadResponse, NotificationUnreadCount
+from app.schemas.notification import (
+    NotificationPage, NotificationReadAllResponse, NotificationReadResponse, NotificationUnreadCount,
+)
 from app.services.notification import NotificationService
 
 
@@ -41,6 +43,20 @@ def list_notifications(
         return service.list_for_user(user.id, limit, offset, is_read)
     except NotificationReadError:
         raise HTTPException(status_code=500, detail="Unable to retrieve notifications.") from None
+
+
+@router.patch("/read-all", response_model=NotificationReadAllResponse)
+def mark_all_notifications_read(
+    user: Annotated[User, Depends(get_current_user)],
+    service: Annotated[NotificationService, Depends(get_notification_service)],
+    response: Response,
+) -> NotificationReadAllResponse:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return service.mark_all_read(user.id)
+    except NotificationPersistenceError:
+        raise HTTPException(status_code=500, detail="Unable to update notifications.",
+                            headers={"Cache-Control": "no-store"}) from None
 
 
 @router.patch("/{notification_id}/read", response_model=NotificationReadResponse)

@@ -943,8 +943,8 @@ extensible without introducing a PostgreSQL enum. Composite indexes
 `ix_notifications_user_is_read_created_at_id` support ownership, filtering,
 and newest-first pagination.
 
-Listing, unread count, and individual mark-read are implemented. There are no
-event producers, bulk mark-read endpoint, or WebSocket connections. Tests create rows
+Listing, unread count, individual mark-read, and bulk mark-read are implemented.
+There are no event producers or WebSocket connections. Tests create rows
 directly; no production fixtures or notifications are inserted automatically.
 
 Run `.venv/bin/python -m unittest discover -s tests -p test_notifications.py`.
@@ -1002,5 +1002,40 @@ return 422. The existing static unread-count route remains before dynamic routes
 Subsequent `GET /notifications` responses show `is_read=true`, unread-filtered
 lists omit the notification, and `GET /notifications/unread-count` decreases once
 when an unread notification is marked read. Repeated updates do not decrease it
-again. No database schema changes, migrations, producers, bulk mark-read, or
-WebSockets are introduced.
+again. Individual marking uses the existing schema and no producers or
+WebSockets.
+
+
+### Notifications: mark all unread as read
+
+`PATCH /notifications/read-all` uses the existing JWT `get_current_user`
+dependency. No request body or query parameters are required; ownership comes
+exclusively from the authenticated user, including for admins. The static route
+is declared before dynamic notification routes.
+
+HTTP 200 with `Cache-Control: no-store`:
+
+```json
+{"updated_count": 5}
+```
+
+No unread notifications, or an immediately repeated request, returns:
+
+```json
+{"updated_count": 0}
+```
+
+A single SQL UPDATE matches `user_id = authenticated_user.id AND is_read = false`
+and sets `is_read = true`. PostgreSQL/psycopg's affected-row count reports only
+newly changed rows; no notifications are fetched into memory. The transaction
+commits before success and rolls back on errors, including an unavailable or
+unreliable row count. Already-read and other users' records remain unchanged.
+New notifications arriving after the update can remain unread and be included
+in a later request.
+
+Afterward, `GET /notifications` shows the updated read flags and
+`GET /notifications/unread-count` returns zero unless new unread notifications
+have arrived. Authentication failures return 401, mandatory password change
+returns 403, and database errors return a sanitized 500
+(`Unable to update notifications.`). No database schema changes, migrations,
+WebSockets, or notification producers are introduced.

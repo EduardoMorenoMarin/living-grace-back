@@ -2,7 +2,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.exceptions import NotificationReadError
 from app.repositories.notification import NotificationRepository
-from app.schemas.notification import NotificationItem, NotificationPage, NotificationReadResponse, NotificationUnreadCount
+from app.schemas.notification import (
+    NotificationItem, NotificationPage, NotificationReadAllResponse, NotificationReadResponse,
+    NotificationUnreadCount,
+)
 
 
 class NotificationService:
@@ -11,6 +14,9 @@ class NotificationService:
 
     def mark_read(self, user_id: int, notification_id: int) -> NotificationReadResponse:
         return NotificationReadResponse(**self.repository.mark_read(user_id, notification_id))
+
+    def mark_all_read(self, user_id: int) -> NotificationReadAllResponse:
+        return NotificationReadAllResponse(updated_count=self.repository.mark_all_read(user_id))
 
     def unread_count(self, user_id: int) -> NotificationUnreadCount:
         try:

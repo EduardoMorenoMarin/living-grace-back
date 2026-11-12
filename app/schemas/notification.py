@@ -41,3 +41,7 @@ class NotificationUnreadCount(BaseModel):
 class NotificationReadResponse(BaseModel):
     id: int = Field(gt=0)
     is_read: Literal[True]
+
+
+class NotificationReadAllResponse(BaseModel):
+    updated_count: int = Field(ge=0)

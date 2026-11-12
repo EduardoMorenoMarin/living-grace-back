@@ -34,6 +34,25 @@ class NotificationRepository:
             self.db.rollback()
             raise
 
+    def mark_all_read(self, user_id: int) -> int:
+        try:
+            result = self.db.execute(update(Notification).where(
+                Notification.user_id == user_id, Notification.is_read.is_(False),
+            ).values(is_read=True).execution_options(synchronize_session=False))
+            # PostgreSQL/psycopg reports matched rows reliably for this UPDATE.
+            # The unread predicate excludes rows already in the target state.
+            count = result.rowcount
+            if not result.supports_sane_rowcount() or count < 0:
+                raise SQLAlchemyError("Unable to determine updated notification count.")
+            self.db.commit()
+            return count
+        except SQLAlchemyError:
+            self.db.rollback()
+            raise NotificationPersistenceError from None
+        except Exception:
+            self.db.rollback()
+            raise
+
     def list_for_user(self, user_id: int, limit: int, offset: int, is_read: bool | None):
         conditions = [Notification.user_id == user_id]
         if is_read is not None:

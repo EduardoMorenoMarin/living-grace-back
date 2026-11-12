@@ -410,6 +410,147 @@ class NotificationMarkReadTests(unittest.TestCase):
         self.assert_read()
 
 
+class NotificationMarkAllReadTests(unittest.TestCase):
+    setUp = NotificationTests.setUp
+    login = NotificationTests.login
+    change = NotificationTests.change
+    add = NotificationTests.add
+
+    def mark_all_read(self, **kwargs):
+        return self.client.patch("/notifications/read-all", headers=self.headers, **kwargs)
+
+    def assert_updated(self, expected, **kwargs):
+        response = self.mark_all_read(**kwargs)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(response.json(), {"updated_count": expected})
+
+    def test_multiple_unread_and_mixed_records_update_list_and_count(self):
+        for identifier in range(1, 31):
+            self.add(identifier, is_read=identifier % 3 == 0)
+        self.assert_updated(20)
+        self.db.expire_all()
+        self.assertTrue(all(self.db.get(Notification, i).is_read for i in range(1, 31)))
+        listing = self.client.get("/notifications", headers=self.headers, params={"limit": 100})
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.json()["total"], 30)
+        self.assertTrue(all(item["is_read"] for item in listing.json()["items"]))
+        unread = self.client.get("/notifications", headers=self.headers, params={"is_read": "false"})
+        self.assertEqual(unread.json()["items"], [])
+        self.assertEqual(unread.json()["total"], 0)
+        count = self.client.get("/notifications/unread-count", headers=self.headers)
+        self.assertEqual(count.json(), {"unread_count": 0})
+
+    def test_empty_and_already_read_return_zero(self):
+        self.assert_updated(0)
+        self.add(42, is_read=True)
+        self.assert_updated(0)
+
+    def test_repeated_requests_only_count_newly_changed_rows(self):
+        self.add(42)
+        self.add(43)
+        self.assert_updated(2)
+        self.assert_updated(0)
+        self.add(44)
+        self.assert_updated(1)
+        self.assert_updated(0)
+
+    def test_user_and_admin_isolation_ignore_client_identity(self):
+        self.add(1, user_id=102)
+        self.add(2, user_id=102)
+        self.add(3, user_id=101)
+        self.add(4, user_id=104)
+        self.assert_updated(2, params={"user_id": 101}, json={"user_id": 101, "is_read": False})
+        self.db.expire_all()
+        self.assertFalse(self.db.get(Notification, 3).is_read)
+        self.assertFalse(self.db.get(Notification, 4).is_read)
+        self.login(101)
+        self.assert_updated(1, params={"user_id": 104}, json={"user_id": 104})
+        self.db.expire_all()
+        self.assertFalse(self.db.get(Notification, 4).is_read)
+        self.login(103)
+        self.assert_updated(0, params={"user_id": 104})
+        self.login(104)
+        self.assert_updated(1)
+
+    def test_authentication_is_required_before_bulk_update(self):
+        expired = jwt.encode({"sub": "102", "exp": 1, "pwdv": "stale"},
+                             settings.JWT_SECRET_KEY.get_secret_value(), algorithm=settings.JWT_ALGORITHM)
+        original = self.headers
+        for headers in ({}, {"Authorization": "Bearer invalid"}, {"Authorization": f"Bearer {expired}"}):
+            with self.subTest(headers=headers):
+                self.headers = headers
+                with patch.object(NotificationRepository, "mark_all_read") as update:
+                    self.assertEqual(self.mark_all_read().status_code, 401)
+                update.assert_not_called()
+        self.headers = original
+        self.change(User, 102, password_hash="changed-hash")
+        with patch.object(NotificationRepository, "mark_all_read") as update:
+            self.assertEqual(self.mark_all_read().status_code, 401)
+        update.assert_not_called()
+
+    def test_password_change_required_blocks_bulk_update(self):
+        self.change(User, 102, must_change_password=True)
+        with patch.object(NotificationRepository, "mark_all_read") as update:
+            self.assertEqual(self.mark_all_read().status_code, 403)
+        update.assert_not_called()
+
+    def test_one_update_without_fetching_notification_rows_commits(self):
+        self.add(42)
+        self.add(43)
+        self.db.expire_all()
+        statements = []
+        def record(conn, cursor, statement, parameters, context, many):
+            statements.append(statement)
+        event.listen(self.engine, "before_cursor_execute", record)
+        try:
+            with patch.object(self.db, "commit", wraps=self.db.commit) as commit:
+                self.assert_updated(2)
+                commit.assert_called_once_with()
+        finally:
+            event.remove(self.engine, "before_cursor_execute", record)
+        self.assertEqual(len(statements), 2)  # authentication and one bulk UPDATE
+        updates = [sql for sql in statements if sql.lstrip().upper().startswith("UPDATE")]
+        self.assertEqual(len(updates), 1)
+        self.assertIn("notifications.user_id =", updates[0])
+        self.assertIn("notifications.is_read IS", updates[0])
+
+    def test_execute_and_commit_errors_roll_back_all_changes(self):
+        self.add(42)
+        self.add(43)
+        execute = self.db.execute
+        def fail_update(statement, *args, **kwargs):
+            if getattr(statement, "is_update", False):
+                raise SQLAlchemyError("private database details")
+            return execute(statement, *args, **kwargs)
+        for method in ("execute", "commit"):
+            with self.subTest(method=method), \
+                    patch.object(self.db, "rollback", wraps=self.db.rollback) as rollback, \
+                    patch.object(self.db, method, side_effect=fail_update if method == "execute"
+                                 else SQLAlchemyError("private database details")):
+                response = self.mark_all_read()
+                self.assertEqual(response.status_code, 500)
+                self.assertEqual(response.headers["cache-control"], "no-store")
+                self.assertEqual(response.json(), {"detail": "Unable to update notifications."})
+                rollback.assert_called_once_with()
+            self.db.expire_all()
+            self.assertFalse(self.db.get(Notification, 42).is_read)
+            self.assertFalse(self.db.get(Notification, 43).is_read)
+        self.assert_updated(2)
+
+    def test_static_route_precedes_dynamic_and_existing_routes_still_work(self):
+        from app.api.routes.notifications import router
+        paths = [route.path for route in router.routes]
+        self.assertLess(paths.index("/notifications/read-all"), paths.index("/notifications/{notification_id}/read"))
+        self.add(42)
+        self.assert_updated(1)
+        individual = self.client.patch("/notifications/42/read", headers=self.headers)
+        self.assertEqual(individual.status_code, 200)
+        self.assertEqual(individual.json(), {"id": 42, "is_read": True})
+        self.assertEqual(self.client.get("/notifications/unread-count", headers=self.headers).json(),
+                         {"unread_count": 0})
+
+
 @unittest.skipUnless(os.environ.get("NOTIFICATIONS_TEST_DATABASE_URL"), "opt-in isolated PostgreSQL migration test")
 class PostgreSQLNotificationMigrationTests(unittest.TestCase):
     def test_migration_defaults_indexes_foreign_key_and_orm(self):
