@@ -1,11 +1,15 @@
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.core.exceptions import NotificationNotFound, NotificationPersistenceError
+from app.models.enums import MembershipStatus, MinistryStatus, UserStatus
+from app.models.ministry import Ministry
 from app.models.ministry_member import MinistryMember
 from app.models.notification import Notification
 from app.models.rehearsal_attendance import RehearsalAttendance
+from app.models.user import User
+from app.repositories.authorization import AuthorizationRepository
 
 
 class NotificationRepository:
@@ -24,6 +28,26 @@ class NotificationRepository:
             MinistryMember.id.in_(member_ids), MinistryMember.ministry_id == ministry_id,
             RehearsalAttendance.rehearsal_id == rehearsal_id,
         ).distinct().order_by(MinistryMember.user_id)))
+
+    def pending_membership_recipients(self, membership_ids: list[int]):
+        pending = aliased(MinistryMember)
+        admin_membership = aliased(MinistryMember)
+        return self.db.execute(select(pending.ministry_id, User.id.label("user_id"))
+            .select_from(pending)
+            .join(Ministry, Ministry.id == pending.ministry_id)
+            .join(admin_membership, and_(
+                admin_membership.ministry_id == pending.ministry_id,
+                admin_membership.status == MembershipStatus.ACTIVE,
+                admin_membership.deleted_at.is_(None),
+            ))
+            .join(User, User.id == admin_membership.user_id)
+            .where(
+                pending.id.in_(membership_ids), pending.status == MembershipStatus.PENDING,
+                pending.deleted_at.is_(None), Ministry.status == MinistryStatus.ACTIVE,
+                Ministry.deleted_at.is_(None), User.status == UserStatus.ACTIVE, User.deleted_at.is_(None),
+                User.id.in_(AuthorizationRepository(self.db).global_admin_user_ids_statement()),
+            ).distinct().order_by(pending.ministry_id, User.id)
+        ).mappings().all()
 
     def add_many(self, notifications: list[Notification]) -> list[int]:
         # The caller owns the assignment transaction, including commit/rollback.

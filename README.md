@@ -945,8 +945,8 @@ and newest-first pagination.
 
 Listing, unread count, individual mark-read, and bulk mark-read are implemented.
 Authenticated WebSocket delivery is available as described below. Rehearsal
-producers generate assignment, update, and deletion notifications (see below). Other
-notification types in tests are inserted directly; no production fixtures are seeded.
+producers generate assignment, update, and deletion notifications; registration and
+approval produce membership notices (see below). No production fixtures are seeded.
 
 Run `.venv/bin/python -m unittest discover -s tests -p test_notifications.py`.
 To additionally execute the SQL migration and verify defaults, indexes, foreign
@@ -1048,7 +1048,8 @@ WebSocket events or create additional notifications.
 notification endpoints retain their behavior. PostgreSQL remains the source of
 truth; opening a socket and receiving events never mark notifications as read.
 Rehearsal assignment, meaningful update, and deletion producers are connected as
-described below. Membership and attendance changes do not produce events.
+described below. Registration requests and pending-membership approvals also
+produce notices as described below; attendance changes do not produce events.
 
 #### Authentication flow
 
@@ -1218,8 +1219,8 @@ eligibility validation, never a client notification recipient field. One bulk
 lookup deduplicates user IDs and checks that each membership has an assignment
 row for the same rehearsal/ministry. Duplicate participant IDs remain invalid.
 Unchanged lists, list reordering, description/tolerance-only changes, participant
-removals alone, attendance, QR self-check-in (including walk-ins), and memberships
-generate no notifications.
+removals alone, attendance, and QR self-check-in (including walk-ins) generate no
+notifications. Membership notices have separate triggers documented below.
 Re-adding a previously removed participant is a new assignment and notifies again.
 Creating a new rehearsal is still a new operation: this does not add an idempotency
 key or deduplicate repeated rehearsal-creation requests.
@@ -1270,8 +1271,8 @@ delivery failure cannot roll back the committed assignment/notification or preve
 a delivery attempt for the next recipient. A process crash between commit and
 send can lose the live event; persisted notifications remain available. There is
 no outbox, replay worker, or cross-process broker. Single-worker deployment remains
-required. No new endpoints, migrations, membership producers, or attendance producers
-are added.
+required. Membership producers are documented separately below; no attendance
+producers are added.
 
 Run `.venv/bin/python -m unittest discover -s tests -p test_rehearsal_notifications.py`
 for assignment/notification atomicity and live WebSocket delivery coverage.
@@ -1341,8 +1342,113 @@ recipients; offline users retain unread notifications in HTTP history.
 The existing single-process and best-effort delivery limitations remain: there is
 no outbox/replay worker, and a crash after commit can lose the live event. Clients
 must refetch notifications and unread counts after reconnecting. No new endpoints,
-schema changes, attendance/QR changes, membership notifications, or workers are
-introduced.
+schema changes or attendance/QR changes are introduced. Membership notifications
+are documented separately below.
 
 Run `.venv/bin/python -m unittest discover -s tests -p test_rehearsal_change_notifications.py`
 for triggering rules, atomicity, deletion history, and live delivery coverage.
+
+
+### Membership request and approval notifications
+
+Only the existing workflows are used. There is no new endpoint for existing
+users to request another ministry membership.
+
+`POST /users/register` creates selected memberships as PENDING. Each newly created
+membership generates `MEMBERSHIP_PENDING` for eligible administrators associated
+with that requested ministry:
+
+- The recipient account, target-ministry membership, and ministry must be active
+  and nondeleted.
+- The recipient must have effective **global ADMIN** permission under the existing
+  authorization repository: active/nondeleted role, unrevoked assignment, and an
+  active membership/ministry through which that global permission is granted.
+- The effective global role can come from a different active ministry, provided
+  the recipient also has an active membership in the requested ministry.
+- Ministry-scoped ADMIN permission alone is insufficient because it cannot approve
+  requests. Unrelated global admins without target-ministry membership are excluded.
+
+Recipients are deduplicated per requested ministry, even with several qualifying
+roles. Multiple requested ministries are handled independently; an admin associated
+with two requested ministries receives one notice for each. Registration succeeds
+without notifications when there are no eligible admins or no selected memberships.
+Existing duplicate-ministry and duplicate-email validation prevents repeated
+registration requests from producing duplicate notices.
+
+```json
+{
+  "type": "MEMBERSHIP_PENDING",
+  "title": "New membership request",
+  "message": "A new user has requested to join your ministry.",
+  "resource_type": "ministry",
+  "resource_id": 2
+}
+```
+
+`PATCH /ministries/{ministry_id}/members/{membership_id}/status` generates
+`MEMBERSHIP_APPROVED` only when the locked current status is **PENDING** and the
+new status is **ACTIVE**. Only the affected member's user receives the notice.
+ACTIVE → ACTIVE, INACTIVE → ACTIVE, and other transitions generate no approval
+notice. Returning a membership to PENDING through administration does not generate
+a new-registration pending notice. A later genuine PENDING → ACTIVE transition
+can generate another approval notice.
+
+```json
+{
+  "type": "MEMBERSHIP_APPROVED",
+  "title": "Membership approved",
+  "message": "Your membership request has been approved.",
+  "resource_type": "ministry",
+  "resource_id": 2
+}
+```
+
+Global ADMIN authorization, the prohibition on self-approval, ministry/member/user
+eligibility, and protection against removing the last effective global ADMIN are
+unchanged. Existing locks and refreshed membership state prevent concurrent or
+repeated approvals from generating duplicate notices for an unchanged ACTIVE row.
+Notification recipients are derived from persisted relationships, never request
+recipient IDs. The existing HTTP ownership filters and WebSocket authentication
+remain in force.
+
+Pending notices are flushed inside the existing user-registration transaction.
+The status repository still owns the status-update transaction; it invokes a
+notification callback only for a validated PENDING → ACTIVE transition and commits
+both the status change and notification together. Helpers never commit separately.
+Insert/commit failures roll back the business operation and its notifications.
+
+After a successful commit, these **membership flows** schedule async FastAPI
+background tasks calling `NotificationDeliveryService.publish_created(id)`. These
+in-process tasks run after the HTTP response is sent, without keeping a synchronous
+request worker waiting for socket delivery. A failed delivery is isolated so later
+recipients are still attempted. Rehearsal notification delivery is unchanged.
+TestClient waits for background tasks to finish even though a network client receives
+the response first.
+
+WebSocket events retain the existing envelope, for example:
+
+```json
+{
+  "type": "notification.created",
+  "data": {
+    "id": 42,
+    "notification_type": "MEMBERSHIP_APPROVED",
+    "title": "Membership approved",
+    "message": "Your membership request has been approved.",
+    "resource_type": "ministry",
+    "resource_id": 2,
+    "is_read": false,
+    "created_at": "2026-11-12T21:00:00Z"
+  }
+}
+```
+
+Offline recipients retain notices in `GET /notifications` and unread counts.
+Clients should refresh both after reconnecting. Background tasks are not a durable
+queue: a process crash can lose a live event after its notification has committed.
+The existing single-process/shared-broker limitation remains. This step does not
+change previously reviewed authentication or rehearsal-delivery behavior, add a
+membership request workflow, introduce a migration, or add Redis/Celery workers.
+
+Run `.venv/bin/python -m unittest discover -s tests -p test_membership_notifications.py`
+for recipient scoping, transitions, rollback, and socket delivery tests.
