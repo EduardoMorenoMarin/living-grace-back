@@ -136,19 +136,19 @@ class RehearsalReadTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
         self.assertEqual(body["total"], 4)
-        self.assertEqual([item["id"] for item in body["items"]], [301, 302, 303, 305])
-        self.assertEqual([item["participant_count"] for item in body["items"]], [2, 1, 1, 0])
+        self.assertEqual([item["id"] for item in body["items"]], [305, 303, 301, 302])
+        self.assertEqual([item["participant_count"] for item in body["items"]], [0, 1, 2, 1])
         for item in body["items"]:
             self.assertEqual(set(item), COMMON | {"participant_count"})
             self.assertEqual(item["created_by"], {"id": 103, "first_name": "OtherAdmin", "last_name": "Last"})
             self.assertNotIn("private-hash", str(item))
-        self.assertEqual(self.ids(ministry_id=11), [301, 303, 305])
+        self.assertEqual(self.ids(ministry_id=11), [305, 303, 301])
         self.assertEqual(self.get(304).status_code, 404)
         self.assertEqual(self.ids(ministry_id=13), [])
 
     def test_admin_single_active_ministry(self):
         self.change(MinistryMember, 202, status=MembershipStatus.INACTIVE)
-        self.assertEqual(self.ids(), [301, 303, 305])
+        self.assertEqual(self.ids(), [305, 303, 301])
         self.assertEqual(self.get(302).status_code, 404)
 
     def test_admin_detail_all_participants_and_grouped_functions(self):
@@ -171,7 +171,7 @@ class RehearsalReadTests(unittest.TestCase):
         self.change(MinistryMember, 203, status=MembershipStatus.INACTIVE)
         self.change(User, 102, deleted_at=datetime.now(timezone.utc))
         self.assertEqual(len(self.get(301).json()["participants"]), 2)
-        self.assertEqual(self.get().json()["items"][0]["participant_count"], 2)
+        self.assertEqual(next(item for item in self.get().json()["items"] if item["id"] == 301)["participant_count"], 2)
 
     def test_user_only_assigned_across_ministries_no_participant_data(self):
         self.login(102)
@@ -228,13 +228,13 @@ class RehearsalReadTests(unittest.TestCase):
         self.assertEqual(self.get(304, user_id=101, role="ADMIN").status_code, 404)
 
     def test_admin_takes_precedence_and_role_changes_apply_immediately(self):
-        self.assertEqual(self.ids(), [301, 302, 303, 305])
+        self.assertEqual(self.ids(), [305, 303, 301, 302])
         self.change(MinistryMemberRole, 501, revoked_at=datetime.now(timezone.utc))
         # Same JWT, remaining GLOBAL USER role, no selected attendance for admin.
         self.assertEqual(self.get().json(), {"items": [], "total": 0})
         self.assertEqual(self.get(301).status_code, 404)
         self.change(MinistryMemberRole, 501, revoked_at=None)
-        self.assertEqual(self.ids(), [301, 302, 303, 305])
+        self.assertEqual(self.ids(), [305, 303, 301, 302])
         self.assertIn("participants", self.get(301).json())
 
     def test_no_valid_role_forbidden_in_both_endpoints(self):
@@ -287,7 +287,7 @@ class RehearsalReadTests(unittest.TestCase):
             with self.subTest(field=field, value=value):
                 original = getattr(self.db.get(MinistryMember, 202), field)
                 self.change(MinistryMember, 202, **{field: value})
-                self.assertEqual(self.ids(), [301, 303, 305])
+                self.assertEqual(self.ids(), [305, 303, 301])
                 self.assertEqual(self.get(302).status_code, 404)
                 self.change(MinistryMember, 202, **{field: original})
 
@@ -312,7 +312,7 @@ class RehearsalReadTests(unittest.TestCase):
     def test_pagination_total_sort_and_filter(self):
         response = self.get(limit=1, offset=1).json()
         self.assertEqual(response["total"], 4)
-        self.assertEqual([item["id"] for item in response["items"]], [302])
+        self.assertEqual([item["id"] for item in response["items"]], [303])
         self.assertEqual(self.get(limit=1, offset=100).json(), {"items": [], "total": 4})
         response = self.get(limit=1, offset=1, ministry_id=11).json()
         self.assertEqual(response["total"], 3)
@@ -321,10 +321,32 @@ class RehearsalReadTests(unittest.TestCase):
         self.assertEqual(self.get(limit=1, offset=1).json()["total"], 2)
         self.assertEqual(self.ids(limit=1, offset=1), [302])
 
+    def test_scheduled_datetime_descending_with_stable_id_ties_for_both_roles(self):
+        start = self.db.get(Rehearsal, 301).start_at
+        # IDs and creation times must not determine the primary ordering.
+        for identifier, hours in ((301, 3), (302, 1), (303, 3), (305, 2)):
+            self.change(Rehearsal, identifier, start_at=start + timedelta(hours=hours),
+                        end_at=start + timedelta(hours=hours + 2))
+        self.db.add_all([
+            RehearsalAttendance(id=406, rehearsal_id=303, ministry_member_id=203),
+            RehearsalAttendance(id=407, rehearsal_id=305, ministry_member_id=203),
+        ])
+        self.db.commit()
+        for actor in (101, 102):
+            with self.subTest(actor=actor):
+                self.login(actor)
+                self.assertEqual(self.ids(), [301, 303, 305, 302])
+                # Split the timestamp tie across pages and repeat the request.
+                for _ in range(2):
+                    pages = [self.get(limit=1, offset=offset).json() for offset in range(4)]
+                    self.assertEqual([page["items"][0]["id"] for page in pages], [301, 303, 305, 302])
+                    self.assertTrue(all(page["total"] == 4 for page in pages))
+                self.assertEqual(self.ids(ministry_id=11), [301, 303, 305])
+
     def test_no_duplicate_rehearsals_from_roles_or_functions(self):
         self.db.add(MinistryMemberRole(id=505, ministry_member_id=202, role_id=17))
         self.db.commit()
-        self.assertEqual(self.ids(), [301, 302, 303, 305])
+        self.assertEqual(self.ids(), [305, 303, 301, 302])
         self.assertEqual(len(self.get(301).json()["participants"]), 2)
 
     def test_invalid_ids_and_pagination(self):

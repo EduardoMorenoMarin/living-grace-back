@@ -1,5 +1,3 @@
-from typing import Literal
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import MembershipStatus
@@ -22,7 +20,7 @@ class MinistryMembersResponse(BaseModel):
 class MembershipStatusUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    status: Literal[MembershipStatus.ACTIVE]
+    status: MembershipStatus
 
 
 class MembershipStatusResponse(BaseModel):

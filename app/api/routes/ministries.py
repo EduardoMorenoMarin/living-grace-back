@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from app.core.exceptions import (MembershipNotFound, MembershipTransitionConflict,
                                  MinistryMembersPersistenceError, MinistryNotFound)
 from app.models.enums import MembershipStatus
+from app.models.user import User
 from app.dependencies.authorization import require_global_admin
 from app.dependencies.ministry_members import get_ministry_members_service
 from app.schemas.ministry_members import (MembershipStatusResponse, MembershipStatusUpdate,
@@ -44,16 +45,16 @@ def list_ministry_members(
 
 @router.patch(
     "/{ministry_id}/members/{membership_id}/status", response_model=MembershipStatusResponse,
-    dependencies=[Depends(require_global_admin)],
 )
 def update_membership_status(
     ministry_id: Annotated[int, Path(gt=0, le=9223372036854775807)],
     membership_id: Annotated[int, Path(gt=0, le=9223372036854775807)],
     data: MembershipStatusUpdate,
+    admin: Annotated[User, Depends(require_global_admin)],
     service: Annotated[MinistryMembersService, Depends(get_ministry_members_service)],
 ) -> MembershipStatusResponse:
     try:
-        return service.approve(ministry_id, membership_id)
+        return service.update_status(ministry_id, membership_id, data.status, admin.id)
     except MembershipNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
     except MembershipTransitionConflict as exc:

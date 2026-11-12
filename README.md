@@ -299,7 +299,7 @@ executing the supplied DDL. If that export describes a different intended deploy
 verify that deployment separately before using it with this backend.
 
 The database membership default remains `PENDING`; registration explicitly assigns
-`ACTIVE` to every new membership without changing existing records. Neither `main_instrument` nor
+`PENDING` to every new membership without changing existing records. Neither `main_instrument` nor
 `technical_area` exists in the membership table. The proposed columns and migration
 have been removed. No database schema changes are required or were applied.
 
@@ -334,7 +334,7 @@ ID. The HTTP 201 response includes the existing safe user fields and a `membersh
 array containing objects such as:
 
 ```json
-{"id": 100, "ministry_id": 1, "status": "ACTIVE", "function_ids": [10, 11]}
+{"id": 100, "ministry_id": 1, "status": "PENDING", "function_ids": [10, 11]}
 ```
 
 Requests without memberships remain supported and return `"memberships": []`.
@@ -476,7 +476,7 @@ other ministries, no bypass of mandatory function validation, and no partial use
 when a later membership fails the new rule. Unit tests verify rule order, early
 exit, validated inputs, and no redundant database lookups.
 
-User creation, optional memberships/functions, `ACTIVE` membership status, and
+User creation, optional memberships/functions, `PENDING` membership status, and
 public role rejection are preserved. The existing foreign-key, persistence-failure,
 and commit-failure rollback tests still apply. No migration is required. Live
 function assignments retain the verified `ministry_member_functions` mapping noted
@@ -487,12 +487,14 @@ the commands in the Tests section; PostgreSQL coverage remains opt-in and uses
 rollback-protected fixtures without schema changes.
 
 
-### Ministry membership approval
+### Ministry membership status management
 
 Both endpoints require `Authorization: Bearer <access_token>` and the existing
 GLOBAL ADMIN dependency, which checks current database privileges. Registration
-creates ACTIVE memberships with automatic GLOBAL USER role assignment. Existing
-PENDING memberships can still be approved; JWT claims and login responses are unchanged.
+creates PENDING memberships with automatic GLOBAL USER role assignment and ACTIVE
+user accounts. Registration rejects membership status overrides. Existing memberships
+are unchanged. Approval makes the existing USER assignment effective without inserting
+another assignment; JWT claims and login responses are unchanged.
 
 `GET /ministries/1/members?status=PENDING` lists pending members. Supported filters
 are `PENDING`, `ACTIVE`, and `INACTIVE`; omitting the filter returns only `ACTIVE`.
@@ -524,8 +526,14 @@ The successful response is:
 {"ministry_id": 1, "ministry_member_id": 42, "status": "ACTIVE"}
 ```
 
-Only PENDING → ACTIVE is supported. Repeated approval or an INACTIVE source returns
-409. Invalid statuses, extra body fields, and invalid path IDs return 422. Missing,
+All transitions between PENDING, ACTIVE, and INACTIVE are supported, including
+reactivation and returning a membership to PENDING. Send the desired status in the
+same request body. Same-status updates succeed without changing updated_at; actual
+changes update updated_at. Removing the last effective GLOBAL ADMIN privilege returns
+409. Administrators cannot activate their own non-ACTIVE memberships (409).
+Status changes serialize on the global ADMIN role rows to protect concurrent
+demotions. PENDING and INACTIVE memberships grant no ministry access or global roles.
+Invalid statuses, extra body fields, and invalid path IDs return 422. Missing,
 wrong-ministry, or deleted memberships and unavailable users/ministries return 404.
 Users and ministries must be ACTIVE and not deleted; listings apply the same
 eligibility checks. Authentication failures return 401, and authenticated users
@@ -535,7 +543,7 @@ preserves membership identity, function assignments, role assignments, and atten
 
 Frontend: use the returned `ministry_member_id` in the approval URL, send the existing
 bearer token, and refresh both PENDING and ACTIVE lists after a successful approval.
-Handle 409 by refreshing the pending list; never infer backend permission from a
+Handle 409 by preserving an effective global administrator; never infer backend permission from a
 frontend role check. No schema migration or Supabase change is required.
 
 Local workflow coverage:

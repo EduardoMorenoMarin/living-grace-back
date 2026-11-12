@@ -13,6 +13,9 @@ from app.models.ministry import Ministry
 from app.models.ministry_member import MinistryMember
 from app.models.ministry_member_function import MinistryMemberFunction
 from app.models.user import User
+from app.models.role import Role
+from app.models.enums import RoleScope
+from app.repositories.authorization import AuthorizationRepository
 
 
 class MinistryMembersRepository:
@@ -59,8 +62,13 @@ class MinistryMembersRepository:
         except SQLAlchemyError:
             raise MinistryMembersPersistenceError("Unable to retrieve ministry members.") from None
 
-    def approve(self, ministry_id: int, membership_id: int) -> None:
+    def update_status(self, ministry_id: int, membership_id: int, status: MembershipStatus, actor_user_id: int) -> None:
         try:
+            # Serialize status changes on the shared ADMIN role rows before locking
+            # memberships, so concurrent demotions cannot remove the last admin.
+            self.db.scalars(select(Role).where(
+                Role.name == "ADMIN", Role.scope == RoleScope.GLOBAL,
+            ).order_by(Role.id).with_for_update()).all()
             # Lock all eligibility records until commit, including against soft deletion.
             membership = self.db.scalar(
                 select(MinistryMember)
@@ -76,10 +84,15 @@ class MinistryMembersRepository:
             )
             if membership is None:
                 raise MembershipNotFound("Membership does not exist or is unavailable.")
-            if membership.status != MembershipStatus.PENDING:
-                raise MembershipTransitionConflict("Only PENDING memberships can be activated.")
-            membership.status = MembershipStatus.ACTIVE
-            membership.updated_at = func.now()
+            if membership.status != status:
+                if status == MembershipStatus.ACTIVE and membership.user_id == actor_user_id:
+                    raise MembershipTransitionConflict("Cannot approve your own membership.")
+                if membership.status == MembershipStatus.ACTIVE and status != MembershipStatus.ACTIVE:
+                    admins = AuthorizationRepository(self.db).effective_admin_membership_ids()
+                    if membership.id in admins and not admins - {membership.id}:
+                        raise MembershipTransitionConflict("Cannot remove the last effective global ADMIN privilege.")
+                membership.status = status
+                membership.updated_at = func.now()
             self.db.commit()
         except SQLAlchemyError:
             self.db.rollback()

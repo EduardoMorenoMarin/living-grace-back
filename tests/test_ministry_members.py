@@ -273,11 +273,11 @@ class MinistryMembersTests(unittest.TestCase):
         for value in (0, -1, "abc", 9223372036854775808):
             self.assertEqual(self.approve(value).status_code, 422)
             self.assertEqual(self.approve(pending.id, value).status_code, 422)
-        for payload in ({}, {"status": "PENDING"}, {"status": "INACTIVE"}, {"status": "INVALID"},
+        for payload in ({}, {"status": "INVALID"},
                         {"status": "ACTIVE", "user_id": 1}, {"status": None}):
             self.assertEqual(self.approve(pending.id, payload=payload).status_code, 422)
         for member in (active, inactive):
-            self.assertEqual(self.approve(member.id).status_code, 409)
+            self.assertEqual(self.approve(member.id).status_code, 200)
         self.assertEqual(self.client.get("/ministries/1/members?status=ALL", headers=self.headers).status_code, 422)
 
     def test_unavailable_records_cannot_be_approved_or_listed_as_pending(self):
@@ -313,10 +313,10 @@ class MinistryMembersTests(unittest.TestCase):
         self.assertEqual(response.json(), {"detail": "Unable to update membership status."})
         self.assertEqual(self.db.get(MinistryMember, member.id).status, MembershipStatus.PENDING)
         self.assertEqual(self.approve(member.id).status_code, 200)
-        self.assertEqual(self.approve(member.id).status_code, 409)
+        self.assertEqual(self.approve(member.id).status_code, 200)
 
 
-    def test_registered_memberships_are_active_visible_and_keep_global_user_roles(self):
+    def test_registered_memberships_are_pending_and_keep_global_user_roles(self):
         existing = self.member(status=MembershipStatus.PENDING)
         function, _ = self.function(existing, "Guitar")
         self.db.commit()
@@ -333,18 +333,80 @@ class MinistryMembersTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(len(body["memberships"]), 2)
         for membership in body["memberships"]:
-            self.assertEqual(membership["status"], "ACTIVE")
+            self.assertEqual(membership["status"], "PENDING")
             stored = self.db.get(MinistryMember, membership["id"])
-            self.assertEqual(stored.status, MembershipStatus.ACTIVE)
+            self.assertEqual(stored.status, MembershipStatus.PENDING)
             self.assertEqual([a.role_id for a in stored.ministry_member_roles], [38])
             self.assertIsNone(stored.ministry_member_roles[0].revoked_at)
-            listing = self.get(membership["ministry_id"])
+            listing = self.client.get(f"/ministries/{membership['ministry_id']}/members?status=PENDING", headers=self.headers)
             self.assertEqual(listing.status_code, 200, listing.text)
             self.assertIn({
                 "ministry_member_id": stored.id, "user_id": body["id"],
-                "first_name": "New", "last_name": "Member", "status": "ACTIVE",
+                "first_name": "New", "last_name": "Member", "status": "PENDING",
                 "functions": ["Guitar"] if stored.ministry_id == 1 else [],
             }, listing.json()["members"])
         self.assertEqual(self.db.get(MinistryMember, existing.id).status, MembershipStatus.PENDING)
         user_headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(body['id'], self.db.get(User, body['id']).password_hash)}"}
         self.assertEqual(self.client.get("/ministries/1/members", headers=user_headers).status_code, 403)
+
+    def test_all_status_transitions_are_idempotent_and_preserve_assignments(self):
+        from app.repositories.authorization import AuthorizationRepository
+        for source in MembershipStatus:
+            for target in MembershipStatus:
+                with self.subTest(source=source, target=target):
+                    member = self.member(status=source)
+                    _, function = self.function(member, f"Guitar {source.value} {target.value}")
+                    role = MinistryMemberRole(id=1000 + member.id, ministry_member_id=member.id, role_id=38)
+                    self.db.add(role)
+                    member.updated_at = datetime(2000, 1, 1)
+                    self.db.commit()
+                    original_time = member.updated_at
+                    response = self.approve(member.id, payload={"status": target.value})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.json()["status"], target.value)
+                    self.db.refresh(member)
+                    self.assertEqual(member.status, target)
+                    if source == target:
+                        self.assertEqual(member.updated_at, original_time)
+                    else:
+                        self.assertGreater(member.updated_at, original_time)
+                    self.assertEqual([a.id for a in member.ministry_member_roles], [role.id])
+                    self.assertEqual([a.id for a in member.ministry_member_functions], [function.id])
+                    self.assertIsNone(role.revoked_at)
+                    self.assertIsNone(function.revoked_at)
+                    self.assertEqual(AuthorizationRepository(self.db).has_global_role(member.user_id, "USER"),
+                                     target == MembershipStatus.ACTIVE)
+                    self.assertEqual(self.db.get(User, member.user_id).status, UserStatus.ACTIVE)
+
+    def test_last_effective_admin_cannot_be_demoted(self):
+        for status in ("PENDING", "INACTIVE"):
+            self.assertEqual(self.approve(self.admin.id, ministry_id=2, payload={"status": status}).status_code, 409)
+            self.assertEqual(self.db.get(MinistryMember, self.admin.id).status, MembershipStatus.ACTIVE)
+        self.assertEqual(self.approve(self.admin.id, ministry_id=2).status_code, 200)
+        backup = self.member()
+        role = MinistryMemberRole(id=700, ministry_member_id=backup.id, role_id=37)
+        self.db.add(role)
+        self.db.commit()
+        # An assigned ADMIN role on a pending membership is not an effective backup.
+        backup.status = MembershipStatus.PENDING
+        self.db.commit()
+        self.assertEqual(self.approve(self.admin.id, ministry_id=2, payload={"status": "INACTIVE"}).status_code, 409)
+        backup.status = MembershipStatus.ACTIVE
+        self.db.commit()
+        self.assertEqual(self.approve(self.admin.id, ministry_id=2, payload={"status": "INACTIVE"}).status_code, 200)
+        self.assertEqual(self.get().status_code, 403)
+
+    def test_pending_user_cannot_approve_self(self):
+        member = self.member(status=MembershipStatus.PENDING)
+        self.db.add(MinistryMemberRole(id=701, ministry_member_id=member.id, role_id=38))
+        self.db.commit()
+        headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(member.user_id, self.db.get(User, member.user_id).password_hash)}"}
+        self.assertEqual(self.approve(member.id, headers=headers).status_code, 403)
+        self.assertEqual(self.db.get(MinistryMember, member.id).status, MembershipStatus.PENDING)
+
+    def test_admin_cannot_approve_own_pending_membership(self):
+        own = MinistryMember(user_id=self.admin.user_id, ministry_id=1, status=MembershipStatus.PENDING)
+        self.db.add(own)
+        self.db.commit()
+        self.assertEqual(self.approve(own.id).status_code, 409)
+        self.assertEqual(self.db.get(MinistryMember, own.id).status, MembershipStatus.PENDING)
