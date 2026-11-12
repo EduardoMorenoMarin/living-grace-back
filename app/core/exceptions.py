@@ -92,3 +92,15 @@ class PasswordResetUserIneligible(Exception):
 
 class DashboardReadError(Exception):
     pass
+
+
+class NotificationReadError(Exception):
+    pass
+
+
+class NotificationNotFound(Exception):
+    pass
+
+
+class NotificationPersistenceError(Exception):
+    pass

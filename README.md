@@ -866,3 +866,483 @@ Example personal summary (one on-time check-in and one inferred absence):
 Reads never persist effective statuses. No migrations, backfills, schedulers, or
 new endpoints are required. Existing ministry visibility, membership checks,
 participant totals, and assignment/deletion protections remain unchanged.
+
+### Notifications: list endpoint
+
+`GET /notifications` requires the existing JWT `get_current_user` dependency,
+including stale-token checks and the mandatory-password-change restriction.
+It needs no global role: even admins can read only their own notifications.
+The server derives ownership from the authenticated user; `user_id` is not a
+supported query parameter and cannot select another user's records.
+
+Query parameters:
+
+- `limit`: default 20, range 1–100.
+- `offset`: default 0, nonnegative BIGINT range.
+- `is_read`: optional boolean; omit for all notifications.
+
+Items are ordered by `created_at DESC, id DESC`. `total` counts all matching
+notifications for the authenticated user and optional filter, before pagination.
+An offset beyond the results returns an empty `items` list with the same total.
+The response omits the internal owner ID and normalizes timestamps to UTC.
+Listing does not mark items as read; responses use `Cache-Control: no-store`.
+
+Example `GET /notifications?limit=20&offset=0&is_read=false`:
+
+```json
+{
+  "total": 1,
+  "limit": 20,
+  "offset": 0,
+  "items": [
+    {
+      "id": 42,
+      "type": "REHEARSAL_ASSIGNED",
+      "title": "Rehearsal assignment",
+      "message": "You have been assigned to a rehearsal.",
+      "resource_type": "rehearsal",
+      "resource_id": 301,
+      "is_read": false,
+      "created_at": "2026-11-15T17:00:00Z"
+    }
+  ]
+}
+```
+
+Invalid pagination/filter values return 422; authentication failures return 401;
+mandatory password change returns 403; notification query failures return a
+sanitized 500 (`Unable to retrieve notifications.`). Two notification SELECTs
+(count and page) keep query count constant. Offset pagination is deterministic
+for unchanged data; new inserts can shift later pages.
+
+#### Notifications database migration
+
+This repository has no Alembic configuration or migration runner. Apply the
+versioned PostgreSQL SQL migration `migrations/001_create_notifications.sql`
+once to the existing schema before enabling this endpoint. With a PostgreSQL
+connection URI in `PGDATABASE`, use:
+
+```bash
+psql -v ON_ERROR_STOP=1 -f migrations/001_create_notifications.sql
+```
+
+Use a PostgreSQL URI (`postgresql://...`), not SQLAlchemy's
+`postgresql+psycopg://...` URI, with psql. The migration is transactional, targets
+the connection's current schema (normally `public`), requires the existing
+`users(id BIGINT)` table, and intentionally fails if `notifications` already
+exists. It does not alter existing tables. No DDL runs at application startup.
+
+`notifications` uses a BIGINT identity primary key, a required `user_id` foreign
+key to `users(id)` with `ON DELETE CASCADE`, required text `type`, `title`, and
+`message`, nullable text `resource_type`, nullable BIGINT `resource_id`, required
+`is_read BOOLEAN DEFAULT false`, and required `created_at TIMESTAMPTZ DEFAULT
+now()`. Resources are optional polymorphic references, not foreign keys; future
+resource endpoints must apply their own authorization. Type strings remain
+extensible without introducing a PostgreSQL enum. Composite indexes
+`ix_notifications_user_created_at_id` and
+`ix_notifications_user_is_read_created_at_id` support ownership, filtering,
+and newest-first pagination.
+
+Listing, unread count, individual mark-read, and bulk mark-read are implemented.
+Authenticated WebSocket delivery is available as described below. Rehearsal
+producers generate assignment, update, and deletion notifications (see below). Other
+notification types in tests are inserted directly; no production fixtures are seeded.
+
+Run `.venv/bin/python -m unittest discover -s tests -p test_notifications.py`.
+To additionally execute the SQL migration and verify defaults, indexes, foreign
+keys, and ORM queries on PostgreSQL, set `NOTIFICATIONS_TEST_DATABASE_URL` to a
+scratch SQLAlchemy PostgreSQL URL. That opt-in test creates and removes only a
+unique test schema; it never falls back to the application's `DATABASE_URL`.
+
+
+### Notifications: unread count
+
+`GET /notifications/unread-count` uses the same JWT `get_current_user` dependency
+as notification listing, including stale-token checks and mandatory password
+changes. It returns only the authenticated user's notifications where `is_read`
+is false. Admins have no cross-user override; client-supplied user IDs, roles,
+filters, or pagination cannot change the count. This endpoint has no query
+parameters and uses a single SQL `COUNT(*)`, without loading notification rows
+or changing their read status. The response includes `Cache-Control: no-store`.
+
+```json
+{"unread_count": 5}
+```
+
+No unread notifications returns `{"unread_count": 0}`. Authentication failures
+return 401; mandatory password change returns 403; database errors return a
+sanitized 500 (`Unable to retrieve notifications.`). The static route is declared
+before future routes containing notification ID parameters. The existing
+user/read-status index supports the query; no schema change or migration is
+needed. `GET /notifications` retains its existing pagination and filtering.
+
+
+### Notifications: mark one as read
+
+`PATCH /notifications/{notification_id}/read` requires the same JWT
+`get_current_user` dependency as notification listing. The path ID must be a
+positive BIGINT. No request body or query parameters are needed or used for
+ownership; only the authenticated user's ID can select the notification.
+
+Example `PATCH /notifications/42/read` returns HTTP 200 with
+`Cache-Control: no-store`:
+
+```json
+{"id": 42, "is_read": true}
+```
+
+The operation is idempotent: an already-read notification returns the same 200
+response. A single ownership-scoped `UPDATE ... RETURNING` sets `is_read=true`
+and returns the result only after commit succeeds. Database errors roll back
+and return a sanitized 500 (`Unable to update notification.`). A nonexistent
+notification and another user's notification both return the same 404
+(`Notification does not exist.`); admins have no ownership override. Authentication
+failures return 401, mandatory password change returns 403, and invalid IDs
+return 422. The existing static unread-count route remains before dynamic routes.
+
+Subsequent `GET /notifications` responses show `is_read=true`, unread-filtered
+lists omit the notification, and `GET /notifications/unread-count` decreases once
+when an unread notification is marked read. Repeated updates do not decrease it
+again. Individual marking uses the existing schema; real-time delivery and
+assignment producers are documented separately below.
+
+
+### Notifications: mark all unread as read
+
+`PATCH /notifications/read-all` uses the existing JWT `get_current_user`
+dependency. No request body or query parameters are required; ownership comes
+exclusively from the authenticated user, including for admins. The static route
+is declared before dynamic notification routes.
+
+HTTP 200 with `Cache-Control: no-store`:
+
+```json
+{"updated_count": 5}
+```
+
+No unread notifications, or an immediately repeated request, returns:
+
+```json
+{"updated_count": 0}
+```
+
+A single SQL UPDATE matches `user_id = authenticated_user.id AND is_read = false`
+and sets `is_read = true`. PostgreSQL/psycopg's affected-row count reports only
+newly changed rows; no notifications are fetched into memory. The transaction
+commits before success and rolls back on errors, including an unavailable or
+unreliable row count. Already-read and other users' records remain unchanged.
+New notifications arriving after the update can remain unread and be included
+in a later request.
+
+Afterward, `GET /notifications` shows the updated read flags and
+`GET /notifications/unread-count` returns zero unless new unread notifications
+have arrived. Authentication failures return 401, mandatory password change
+returns 403, and database errors return a sanitized 500
+(`Unable to update notifications.`). Marking notifications read does not emit
+WebSocket events or create additional notifications.
+
+
+### Real-time notifications: WebSocket
+
+`WS /ws/notifications` is a user-scoped server-to-client stream. Existing HTTP
+notification endpoints retain their behavior. PostgreSQL remains the source of
+truth; opening a socket and receiving events never mark notifications as read.
+Rehearsal assignment, meaningful update, and deletion producers are connected as
+described below. Membership and attendance changes do not produce events.
+
+#### Authentication flow
+
+Login currently returns a bearer JWT, with no HttpOnly authentication cookie.
+Browser WebSocket clients cannot attach an Authorization header. To avoid
+changing login/cookie semantics or placing the JWT in a WebSocket URL, the minimal
+supporting endpoint `POST /notifications/ws-ticket` uses the existing bearer
+`get_current_user` dependency. It requires no body or client user ID and returns:
+
+```json
+{"ticket": "<opaque-single-use-ticket>", "expires_in": 60}
+```
+
+Ticket responses include `Cache-Control: no-store`. Tickets use 256 bits of
+randomness; the process stores a ticket hash and its bearer credential binding.
+Tickets expire after 60 seconds, are atomically consumed once, and never extend
+the original JWT's lifetime. The bounded in-memory store rejects issuance with
+503 when at capacity. Invalid/stale JWTs return 401 and mandatory password changes
+return 403, using existing HTTP authentication rules.
+
+Connect with the subprotocols `living-grace.notifications` and `ticket.<ticket>`.
+The server selects only `living-grace.notifications`, never echoes the ticket,
+and validates the original JWT again against the current password hash before
+accepting. Password reset/change revokes outstanding tickets. Ticket replay,
+expired/invalid credentials, mandatory password change, missing/untrusted Origin,
+and query parameters are rejected before acceptance (policy code 1008; a real
+server may expose handshake rejection as HTTP 403).
+
+The Origin must exactly match configured `FRONTEND_ORIGIN` (same trusted frontend
+as CORS). No wildcard, missing Origin, or `null` Origin is accepted. Cookies and
+JWT query parameters are not accepted for socket authentication. Use HTTPS for
+ticket requests and WSS for sockets in production. Treat ticket response bodies,
+Authorization headers, and Sec-WebSocket-Protocol request headers as credentials;
+do not log them at the application, proxy, or tracing layer.
+
+#### Browser example and lifecycle
+
+This example assumes the existing login flow provides `accessToken`. On each
+reconnection obtain a fresh ticket; a consumed or expired ticket cannot be reused.
+`refreshNotifications()` must fetch both `/notifications` and
+`/notifications/unread-count` with the same bearer Authorization header.
+
+```javascript
+function subscribeToNotifications(apiUrl, accessToken, refreshNotifications, onAuthRequired) {
+  let socket, retry, stopped = false, delay = 1000;
+  const schedule = () => {
+    if (!stopped) {
+      retry = setTimeout(connect, delay);
+      delay = Math.min(delay * 2, 30000);
+    }
+  };
+  async function connect() {
+    try {
+      const response = await fetch(new URL('/notifications/ws-ticket', apiUrl), {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        cache: 'no-store'
+      });
+      if (response.status === 401 || response.status === 403) {
+        stopped = true;
+        onAuthRequired(); // refresh credentials or finish mandatory password change
+        return;
+      }
+      if (!response.ok) throw new Error('Ticket request failed');
+      const { ticket } = await response.json();
+      if (stopped) return;
+      const url = new URL('/ws/notifications', apiUrl);
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+      socket = new WebSocket(url, ['living-grace.notifications', `ticket.${ticket}`]);
+      socket.onopen = () => { delay = 1000; refreshNotifications(); };
+      socket.onmessage = ({ data }) => {
+        const event = JSON.parse(data);
+        if (event.type === 'notification.created') refreshNotifications();
+      };
+      socket.onerror = () => socket.close();
+      socket.onclose = schedule;
+    } catch {
+      schedule();
+    }
+  }
+  connect();
+  return () => { stopped = true; clearTimeout(retry); socket?.close(); };
+}
+```
+
+Several tabs/devices can connect for the same user. Connections are grouped by
+server-authenticated user ID, and notifications are never broadcast globally.
+Client messages cannot choose a recipient or publish events; application messages
+close the connection with 1008. Disconnects remove only that socket. Credentials
+are revalidated before each delivery and every 30 seconds while idle; password
+reset, mandatory password change, or JWT expiration closes invalid connections.
+The brief interval is not a replacement for revalidation at delivery time.
+
+Example event:
+
+```json
+{
+  "type": "notification.created",
+  "data": {
+    "id": 42,
+    "notification_type": "REHEARSAL_ASSIGNED",
+    "title": "New rehearsal",
+    "message": "You have been assigned to a rehearsal.",
+    "resource_type": "rehearsal",
+    "resource_id": 301,
+    "is_read": false,
+    "created_at": "2026-11-12T21:00:00Z"
+  }
+}
+```
+
+#### Future producer integration and reliability
+
+`NotificationDeliveryService.publish_created(notification_id)` is the reusable
+async delivery entry point, assembled by `get_notification_delivery_service()`.
+Rehearsal producers, and any future producers, must persist and COMMIT
+the notification before calling it.
+The service opens an independent database session, reads the committed row and
+its owner, builds the explicit event schema, and sends only to that owner's
+connections. PostgreSQL's default READ COMMITTED isolation prevents an uncommitted
+insert from being delivered even if called prematurely; premature calls are not
+queued or retried. Do not inject a producer's active write session as the delivery
+session factory. There are deliberately no SQLAlchemy/domain event hooks yet.
+
+Broken or slow connections are removed without failing other recipients or the
+producer's committed transaction. Sends are serialized per connection and have
+a five-second timeout. Offline users still retrieve persisted notifications from
+`GET /notifications`. Delivery is best effort: there is no replay, durable queue,
+or exactly-once guarantee, and clients should tolerate duplicate notification IDs.
+Always refetch the list and unread count after connecting/reconnecting, including
+when a connection died before receiving an event. Read mutations remain HTTP-only.
+
+#### Deployment
+
+Install `requirements.txt` (now includes `websockets`) and run a single process:
+
+```bash
+uvicorn app.main:app --workers 1 --ws auto
+```
+
+Configure the reverse proxy to forward WebSocket upgrades, Origin, and subprotocol
+headers, with suitable idle timeouts. Ticket storage and the connection registry
+are process-local and reset on restart. Multiple workers or instances require a
+shared single-use ticket store AND a shared event broker such as Redis Pub/Sub
+(or equivalent routing); sticky routing alone is not a complete delivery design.
+Redis, Celery, background workers, and additional schema migrations are not introduced.
+
+Run `.venv/bin/python -m unittest discover -s tests -p test_notification_realtime.py`
+for socket/ticket/commit-isolation coverage and the existing notification tests
+for HTTP regressions.
+
+
+### Automatic rehearsal assignment notifications
+
+The existing validated assignment flows now create `REHEARSAL_ASSIGNED`
+notifications:
+
+- `RehearsalCreator.create()` (`POST /rehearsals`): every selected participant is
+  newly assigned and receives one notification.
+- `RehearsalUpdateService.update()` (`PATCH /rehearsals/{id}`): only membership IDs
+  newly added to the participant list receive notifications. A simultaneous rename
+  is reflected in the new participants' assignment messages. Retained participants
+  receive REHEARSAL_UPDATED when meaningful details change, as described below.
+
+The recipient user IDs come from assigned ministry memberships after existing
+eligibility validation, never a client notification recipient field. One bulk
+lookup deduplicates user IDs and checks that each membership has an assignment
+row for the same rehearsal/ministry. Duplicate participant IDs remain invalid.
+Unchanged lists, list reordering, description/tolerance-only changes, participant
+removals alone, attendance, QR self-check-in (including walk-ins), and memberships
+generate no notifications.
+Re-adding a previously removed participant is a new assignment and notifies again.
+Creating a new rehearsal is still a new operation: this does not add an idempotency
+key or deduplicate repeated rehearsal-creation requests.
+
+Example persisted notification:
+
+```json
+{
+  "id": 42,
+  "user_id": 102,
+  "type": "REHEARSAL_ASSIGNED",
+  "title": "New rehearsal assignment",
+  "message": "You have been assigned to rehearsal \"Sunday worship practice\".",
+  "resource_type": "rehearsal",
+  "resource_id": 306,
+  "is_read": false,
+  "created_at": "2026-11-12T21:00:00Z"
+}
+```
+
+The internal `user_id` is omitted from HTTP and WebSocket notification payloads.
+Assignment and notification rows are inserted/flushed in the same SQLAlchemy
+session and transaction. Notification helpers never commit independently. Any
+assignment, notification insert, response-construction, or commit failure rolls
+back both. The existing rehearsal lock serializes participant updates; additions
+are computed from the locked current assignments, preventing duplicate notices
+for unchanged assignments on repeated or concurrent updates.
+
+Only after the rehearsal transaction exits successfully does
+`NotificationService.publish_after_commit()` invoke
+`NotificationDeliveryService.publish_created(id)` for each new notification.
+FastAPI's synchronous request worker uses AnyIO to execute the async delivery on
+the application's existing event loop. Delivery uses a separate session to read
+the committed notification and its owner. When no sockets are connected it skips
+the extra delivery lookup. A custom standalone service composition must inject a
+publisher to opt into live delivery; persistence is enabled by default.
+
+Online clients receive the existing `notification.created` event with
+`data.notification_type = "REHEARSAL_ASSIGNED"` and the fields above (without
+`user_id`, and with `notification_type` replacing `type` inside `data`). Each
+recipient's connected tabs/devices receive the event; other users do not.
+Offline recipients still see the unread notification through `GET /notifications`
+and `GET /notifications/unread-count`. The existing frontend example handles the
+event by refetching those endpoints. After reconnect, always refetch both.
+
+Delivery is inline and best effort: slow sockets can add response latency, but a
+delivery failure cannot roll back the committed assignment/notification or prevent
+a delivery attempt for the next recipient. A process crash between commit and
+send can lose the live event; persisted notifications remain available. There is
+no outbox, replay worker, or cross-process broker. Single-worker deployment remains
+required. No new endpoints, migrations, membership producers, or attendance producers
+are added.
+
+Run `.venv/bin/python -m unittest discover -s tests -p test_rehearsal_notifications.py`
+for assignment/notification atomicity and live WebSocket delivery coverage.
+
+
+### Rehearsal update and cancellation notifications
+
+The existing `PATCH /rehearsals/{id}` flow generates `REHEARSAL_UPDATED` when
+`name`, `start_at`, or `end_at` actually changes. The current model has no location
+field. Names use the existing trimmed schema value; datetime comparisons use
+instants, so equivalent timezone offsets do not count as changes. Description,
+tolerance, and internal timestamps are not meaningful notification triggers.
+
+Recipients are the intersection of the original locked assignments and final
+assignments. Each retained user receives at most one update notification per
+successful operation, even if several fields change. Newly added users receive
+only `REHEARSAL_ASSIGNED`; removed users receive neither type. Adding/removing
+participants alone, reordering IDs, and repeating an unchanged update generate no
+update notices. Existing membership eligibility, recorded-attendance protections,
+admin authorization, ministry visibility, and rehearsal locks are preserved.
+
+Example notification fields (IDs and timestamps are assigned by the database):
+
+```json
+{
+  "type": "REHEARSAL_UPDATED",
+  "title": "Rehearsal updated",
+  "message": "The details of your rehearsal \"Sunday practice\" have changed.",
+  "resource_type": "rehearsal",
+  "resource_id": 306
+}
+```
+
+There is no persisted cancellation status. `REHEARSAL_CANCELLED` represents a
+successful physical deletion through the existing `DELETE /rehearsals/{id}`.
+The service locks the rehearsal and attendance rows, applies the existing guard
+against deleting recorded attendance, then snapshots recipients from assignments
+immediately before deletion. It creates cancellation notifications before the
+assignment rows cascade away, in the same transaction as the deletion.
+
+```json
+{
+  "type": "REHEARSAL_CANCELLED",
+  "title": "Rehearsal canceled",
+  "message": "Your rehearsal \"Sunday practice\" has been canceled.",
+  "resource_type": "rehearsal",
+  "resource_id": 306
+}
+```
+
+The rehearsal and assignment rows are deleted; notification history remains.
+`resource_id` is an informational reference without a rehearsal foreign key.
+The frontend should display cancellation details from the notification and handle
+404 when attempting to open a deleted resource. Repeated DELETE requests return
+the existing 404 and do not create duplicate notices. Zero-participant rehearsals
+produce no notices. Failed, unauthorized, or blocked deletions produce none.
+
+All notice inserts flush without independent commits. An update/delete failure,
+notification failure, or failed commit rolls back the operation and its notices.
+Only after successful commit does the existing publisher call
+`NotificationDeliveryService.publish_created(id)` on the application event loop.
+Events retain the `notification.created` envelope; `data.notification_type` is
+`REHEARSAL_UPDATED` or `REHEARSAL_CANCELLED`. The owner ID is never exposed in
+that event. Delivery errors cannot undo committed changes or skip subsequent
+recipients; offline users retain unread notifications in HTTP history.
+
+The existing single-process and best-effort delivery limitations remain: there is
+no outbox/replay worker, and a crash after commit can lose the live event. Clients
+must refetch notifications and unread counts after reconnecting. No new endpoints,
+schema changes, attendance/QR changes, membership notifications, or workers are
+introduced.
+
+Run `.venv/bin/python -m unittest discover -s tests -p test_rehearsal_change_notifications.py`
+for triggering rules, atomicity, deletion history, and live delivery coverage.

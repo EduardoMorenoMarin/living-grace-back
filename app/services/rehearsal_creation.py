@@ -3,8 +3,10 @@ import logging
 from app.core.exceptions import MinistryNotFound, RehearsalValidationError
 from app.models.rehearsal import Rehearsal
 from app.repositories.membership import MembershipRepository
+from app.repositories.notification import NotificationRepository
 from app.repositories.rehearsal import RehearsalRepository
 from app.schemas.rehearsal import RehearsalCreate, RehearsalResponse
+from app.services.notification import NotificationService
 
 
 logger = logging.getLogger(__name__)
@@ -18,9 +20,13 @@ class RehearsalCreator:
     The caller supplies the trusted authenticated user ID separately from data.
     """
 
-    def __init__(self, repository: RehearsalRepository, memberships: MembershipRepository):
+    def __init__(self, repository: RehearsalRepository, memberships: MembershipRepository,
+                 notifications: NotificationService | None = None):
         self.repository = repository
         self.memberships = memberships
+        self.notifications = notifications if notifications is not None else NotificationService(
+            NotificationRepository(repository.db),
+        )
 
     def create(self, data: RehearsalCreate, user_id: int) -> RehearsalResponse:
         with self.repository.transaction():
@@ -32,7 +38,9 @@ class RehearsalCreator:
             rehearsal = Rehearsal(**data.model_dump(exclude={"ministry_member_ids"}), created_by=user_id)
             self.repository.add(rehearsal)
             self.repository.add_attendance(rehearsal.id, data.ministry_member_ids)
+            notification_ids = self.notifications.create_rehearsal_assignments(rehearsal, data.ministry_member_ids)
             result = RehearsalResponse.model_validate(rehearsal)
+        self.notifications.publish_after_commit(notification_ids)
         return result
 
 

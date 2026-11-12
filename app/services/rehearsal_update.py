@@ -1,21 +1,39 @@
 from datetime import datetime, timezone
 
 from app.core.exceptions import RehearsalAttendanceConflict, RehearsalNotFound, RehearsalValidationError
+from app.repositories.notification import NotificationRepository
 from app.repositories.rehearsal import RehearsalRepository
 from app.repositories.rehearsal_read import RehearsalReadRepository
 from app.schemas.rehearsal_read import AdminRehearsalDetail
 from app.schemas.rehearsal_update import RehearsalUpdate
 from app.services.rehearsal_read import RehearsalReadService, RehearsalViewer
+from app.services.notification import NotificationService
 
 
 class RehearsalUpdateService:
+    MEANINGFUL_FIELDS = {"name", "start_at", "end_at"}
+
+    @staticmethod
+    def _aware(value):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+    @classmethod
+    def _same_value(cls, previous, value):
+        if isinstance(previous, datetime) and isinstance(value, datetime):
+            return cls._aware(previous) == cls._aware(value)
+        return previous == value
+
     def __init__(
         self, repository: RehearsalRepository, reads: RehearsalReadRepository,
         reader: RehearsalReadService,
+        notifications: NotificationService | None = None,
     ):
         self.repository = repository
         self.reads = reads
         self.reader = reader
+        self.notifications = notifications if notifications is not None else NotificationService(
+            NotificationRepository(repository.db),
+        )
 
     def update(self, rehearsal_id: int, user_id: int, data: RehearsalUpdate) -> AdminRehearsalDetail:
         with self.repository.transaction():
@@ -26,11 +44,17 @@ class RehearsalUpdateService:
             desired = changes.pop("ministry_member_ids", None)
             start = changes.get("start_at", rehearsal.start_at)
             end = changes.get("end_at", rehearsal.end_at)
-            if end <= start:
+            if self._aware(end) <= self._aware(start):
                 raise RehearsalValidationError("end_at must be after start_at.")
+
+            meaningful_change = any(
+                field in self.MEANINGFUL_FIELDS and not self._same_value(getattr(rehearsal, field), value)
+                for field, value in changes.items()
+            )
 
             removed = []
             added = []
+            retained_ids = set()
             if desired is not None:
                 desired_ids = set(desired)
                 if desired and self.repository.eligible_participant_ids(rehearsal.ministry_id, desired) != desired_ids:
@@ -41,10 +65,14 @@ class RehearsalUpdateService:
                 if any(row.arrival_at is not None or row.attendance_status is not None for row in removed):
                     raise RehearsalAttendanceConflict("Cannot remove participants with recorded arrival or attendance information.")
                 added = [member_id for member_id in desired if member_id not in current_ids]
+                retained_ids = current_ids & desired_ids
+            elif meaningful_change:
+                retained_ids = {row.ministry_member_id for row in
+                                self.repository.get_attendance_for_update(rehearsal.id)}
 
             changed = bool(removed or added)
             for field, value in changes.items():
-                if getattr(rehearsal, field) != value:
+                if not self._same_value(getattr(rehearsal, field), value):
                     setattr(rehearsal, field, value)
                     changed = True
             if changed:
@@ -53,6 +81,10 @@ class RehearsalUpdateService:
                 self.repository.remove_attendance([row.id for row in removed])
             if added:
                 self.repository.add_attendance(rehearsal.id, added)
+            notification_ids = self.notifications.create_rehearsal_assignments(rehearsal, added)
+            if meaningful_change:
+                notification_ids.extend(self.notifications.create_rehearsal_updates(rehearsal, sorted(retained_ids)))
             self.repository.flush()
             result = self.reader.get_visible(RehearsalViewer(user_id, True), rehearsal.id)
+        self.notifications.publish_after_commit(notification_ids)
         return result
