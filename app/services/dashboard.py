@@ -55,7 +55,7 @@ class DashboardService:
                 user.id, ministry_id, month_start.astimezone(timezone.utc), month_end.astimezone(timezone.utc), now,
             )
             recent = self.repository.recent(user.id, ministry_id, now)
-            upcoming = self.repository.upcoming(user.id, ministry_id, now)
+            upcoming = self.repository.upcoming(user.id, ministry_id, now, is_admin=viewer.is_admin)
         except SQLAlchemyError:
             raise DashboardReadError from None
         attended = counts["on_time"] + counts["late"]

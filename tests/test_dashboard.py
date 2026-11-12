@@ -111,8 +111,8 @@ class DashboardTests(unittest.TestCase):
         for ministry in (0, -1, "invalid", 9223372036854775808):
             self.assertEqual(self.dashboard(ministry_id=ministry).status_code, 422)
 
-    def test_admin_dashboard_contains_only_personal_assignments(self):
-        self.populate()
+    def test_admin_upcoming_includes_unassigned_but_attendance_remains_personal(self):
+        _, upcoming = self.populate()
         own_past = self.add(self.now - timedelta(days=2), AttendanceStatus.LATE, member=201)
         own_future = self.add(self.now + timedelta(hours=1), member=202, ministry=12)
         self.login(101)
@@ -120,8 +120,59 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(body["profile"]["is_global_admin"])
         self.assertEqual(body["monthly_attendance"]["total_completed_assigned_rehearsals"], 1)
         self.assertEqual([r["rehearsal_id"] for r in body["recent_attendance"]], [own_past])
-        self.assertEqual([r["rehearsal_id"] for r in body["upcoming_rehearsals"]], [own_future])
+        self.assertEqual([r["rehearsal_id"] for r in body["upcoming_rehearsals"]], [own_future] + upcoming[:4])
+        self.assertEqual(body["next_rehearsal"], body["upcoming_rehearsals"][0])
         self.assertNotIn("participant_count", str(body))
+
+    def test_upcoming_visibility_filter_order_limit_and_next_for_both_roles(self):
+        # Insert out of chronological order, including equal start times.
+        later = self.add(self.now + timedelta(days=8))
+        unassigned = self.add(self.now + timedelta(hours=1), member=206)
+        at_now = self.add(self.now)
+        tied = self.add(self.now)
+        selected = self.add(self.now + timedelta(days=2), member=204, ministry=12)
+        extra = [self.add(self.now + timedelta(days=day)) for day in (5, 3, 4)]
+        self.add(self.now - timedelta(seconds=1), member=206)
+        self.add(self.now, member=207, ministry=13)
+        # An admin also sees rehearsals with no participants at all.
+        self.db.execute(delete(RehearsalAttendance).where(RehearsalAttendance.rehearsal_id == unassigned))
+        self.db.commit()
+        for user, expected in (
+            (102, [at_now, tied, selected, extra[1], extra[2]]),
+            (101, [at_now, tied, unassigned, selected, extra[1]]),
+        ):
+            with self.subTest(user=user):
+                self.login(user)
+                body = self.body(is_admin=True, role="ADMIN")
+                self.assertEqual([r["rehearsal_id"] for r in body["upcoming_rehearsals"]], expected)
+                self.assertEqual(body["next_rehearsal"], body["upcoming_rehearsals"][0])
+                filtered = self.body(ministry_id=12)
+                self.assertEqual([r["rehearsal_id"] for r in filtered["upcoming_rehearsals"]], [selected])
+                self.assertEqual(filtered["next_rehearsal"], filtered["upcoming_rehearsals"][0])
+                self.assertEqual(self.dashboard(ministry_id=13).status_code, 404)
+                ministry11 = self.body(ministry_id=11)
+                self.assertTrue(all(r["ministry"]["id"] == 11 for r in ministry11["upcoming_rehearsals"]))
+                self.assertNotIn(later, [r["rehearsal_id"] for r in ministry11["upcoming_rehearsals"]])
+
+    def test_admin_upcoming_requires_active_membership_and_ministry(self):
+        self.add(self.now, member=204, ministry=12)
+        self.login(101)
+        cases = (
+            (MinistryMember, 202, "status", MembershipStatus.INACTIVE),
+            (MinistryMember, 202, "status", MembershipStatus.PENDING),
+            (MinistryMember, 202, "deleted_at", self.now),
+            (Ministry, 12, "status", MinistryStatus.INACTIVE),
+            (Ministry, 12, "deleted_at", self.now),
+        )
+        for model, identifier, key, value in cases:
+            with self.subTest(model=model, key=key, value=value):
+                previous = getattr(self.db.get(model, identifier), key)
+                self.change(model, identifier, **{key: value})
+                body = self.body()
+                self.assertEqual(body["upcoming_rehearsals"], [])
+                self.assertIsNone(body["next_rehearsal"])
+                self.assertEqual(self.dashboard(ministry_id=12).status_code, 404)
+                self.change(model, identifier, **{key: previous})
 
     def test_empty_dashboard_has_zero_counts_null_rates_and_no_next(self):
         body = self.body()
@@ -267,6 +318,8 @@ class DashboardTests(unittest.TestCase):
             return len(statements)
         self.assertEqual(capture(), 6)
         self.populate()
+        self.assertEqual(capture(), 6)
+        self.login(101)
         self.assertEqual(capture(), 6)
 
     def test_database_failures_are_sanitized(self):
