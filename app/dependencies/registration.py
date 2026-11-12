@@ -14,6 +14,8 @@ from app.repositories.registration_roles import RegistrationRoleRepository
 from app.services.membership_registration import MembershipRegistrationService
 from app.services.membership_validator import MembershipValidator
 from app.services.membership_rules import MembershipRule
+from app.dependencies.notification import get_membership_notification_service
+from app.services.notification import NotificationService
 
 
 def get_membership_rules() -> tuple[MembershipRule, ...]:
@@ -24,6 +26,7 @@ def get_membership_rules() -> tuple[MembershipRule, ...]:
 def get_registration_service(
     db: Annotated[Session, Depends(get_db)],
     membership_rules: Annotated[tuple[MembershipRule, ...], Depends(get_membership_rules)],
+    notifications: Annotated[NotificationService, Depends(get_membership_notification_service)],
 ) -> RegistrationService:
     repository = UserRepository(db)
     memberships = MembershipRepository(db)
@@ -34,4 +37,5 @@ def get_registration_service(
         user_mapper=UserMapper(),
         membership_validator=MembershipValidator(memberships, membership_rules),
         membership_registration=MembershipRegistrationService(memberships, RegistrationRoleRepository(db)),
+        notifications=notifications,
     )

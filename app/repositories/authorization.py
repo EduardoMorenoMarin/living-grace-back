@@ -29,6 +29,12 @@ class AuthorizationRepository:
         statement = self._global_roles(None).with_only_columns(MinistryMember.id).where(Role.name == "ADMIN")
         return set(self.db.scalars(statement))
 
+    def global_admin_user_ids_statement(self):
+        """Uncorrelated SQL selection using the same effective global ADMIN rules."""
+        return self._global_roles(None).with_only_columns(MinistryMember.user_id).where(
+            Role.name == "ADMIN",
+        ).distinct().correlate(None)
+
     def _global_roles(self, user_id: int | None):
         return (
             select(Role.name)

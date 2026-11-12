@@ -5,6 +5,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.core.exceptions import NotificationReadError
 from app.models.notification import Notification
 from app.models.rehearsal import Rehearsal
+from app.models.ministry_member import MinistryMember
 from app.repositories.notification import NotificationRepository
 from app.schemas.notification import (
     NotificationItem, NotificationPage, NotificationReadAllResponse, NotificationReadResponse,
@@ -16,6 +17,27 @@ class NotificationService:
     def __init__(self, repository: NotificationRepository, publisher: Callable[[int], None] | None = None):
         self.repository = repository
         self.publisher = publisher
+
+    def create_membership_pending(self, membership_ids: list[int]) -> list[int]:
+        if not membership_ids:
+            return []
+        recipients = self.repository.pending_membership_recipients(membership_ids)
+        if not recipients:
+            return []
+        return self.repository.add_many([
+            Notification(user_id=row["user_id"], type="MEMBERSHIP_PENDING", title="New membership request",
+                         message="A new user has requested to join your ministry.", resource_type="ministry",
+                         resource_id=row["ministry_id"], is_read=False)
+            for row in recipients
+        ])
+
+    def create_membership_approved(self, membership: MinistryMember) -> list[int]:
+        # Called only for a locked, validated PENDING -> ACTIVE transition.
+        return self.repository.add_many([
+            Notification(user_id=membership.user_id, type="MEMBERSHIP_APPROVED", title="Membership approved",
+                         message="Your membership request has been approved.", resource_type="ministry",
+                         resource_id=membership.ministry_id, is_read=False),
+        ])
 
     def create_rehearsal_assignments(self, rehearsal: Rehearsal, new_member_ids: list[int]) -> list[int]:
         return self._create_rehearsal_notifications(

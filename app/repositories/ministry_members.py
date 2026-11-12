@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.engine import RowMapping
@@ -62,8 +62,10 @@ class MinistryMembersRepository:
         except SQLAlchemyError:
             raise MinistryMembersPersistenceError("Unable to retrieve ministry members.") from None
 
-    def update_status(self, ministry_id: int, membership_id: int, status: MembershipStatus, actor_user_id: int) -> None:
+    def update_status(self, ministry_id: int, membership_id: int, status: MembershipStatus, actor_user_id: int,
+                      on_approved: Callable[[MinistryMember], list[int]] | None = None) -> list[int]:
         try:
+            notification_ids = []
             # Serialize status changes on the shared ADMIN role rows before locking
             # memberships, so concurrent demotions cannot remove the last admin.
             self.db.scalars(select(Role).where(
@@ -85,6 +87,7 @@ class MinistryMembersRepository:
             if membership is None:
                 raise MembershipNotFound("Membership does not exist or is unavailable.")
             if membership.status != status:
+                was_pending = membership.status == MembershipStatus.PENDING
                 if status == MembershipStatus.ACTIVE and membership.user_id == actor_user_id:
                     raise MembershipTransitionConflict("Cannot approve your own membership.")
                 if membership.status == MembershipStatus.ACTIVE and status != MembershipStatus.ACTIVE:
@@ -93,7 +96,10 @@ class MinistryMembersRepository:
                         raise MembershipTransitionConflict("Cannot remove the last effective global ADMIN privilege.")
                 membership.status = status
                 membership.updated_at = func.now()
+                if was_pending and status == MembershipStatus.ACTIVE and on_approved is not None:
+                    notification_ids = on_approved(membership)
             self.db.commit()
+            return notification_ids
         except SQLAlchemyError:
             self.db.rollback()
             raise MinistryMembersPersistenceError("Unable to update membership status.") from None
