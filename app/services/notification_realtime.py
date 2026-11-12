@@ -21,7 +21,7 @@ class NotificationSocketAuthenticator:
 
 
 class NotificationDeliveryService:
-    """Future producers call publish_created(id) AFTER commit; no domain hooks yet.
+    """Assignment producers call publish_created(id) AFTER commit.
 
     An independent READ COMMITTED session reads persisted data and owner identity.
     Uncommitted inserts are invisible; offline delivery does not remove DB rows.
@@ -43,6 +43,8 @@ class NotificationDeliveryService:
             return notification.user_id, event.model_dump(mode="json")
 
     async def publish_created(self, notification_id: int) -> int:
+        if not self.manager.has_connections():
+            return 0
         try:
             committed = await run_in_threadpool(self._load_committed, notification_id)
         except SQLAlchemyError:

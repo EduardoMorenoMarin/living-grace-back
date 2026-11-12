@@ -238,7 +238,9 @@ class NotificationDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_database_delivery_failure_is_best_effort(self):
         from sqlalchemy.exc import SQLAlchemyError
-        delivery = NotificationDeliveryService(None, NotificationConnectionManager())
+        manager = NotificationConnectionManager()
+        await manager.connect(1, AsyncMock(), AsyncMock(return_value=True))
+        delivery = NotificationDeliveryService(None, manager)
         with patch.object(delivery, "_load_committed", side_effect=SQLAlchemyError("private")):
             self.assertEqual(await delivery.publish_created(42), 0)
 

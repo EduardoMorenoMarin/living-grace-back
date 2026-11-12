@@ -297,9 +297,10 @@ class RehearsalUpdateTests(unittest.TestCase):
             event.remove(self.engine, "before_cursor_execute", capture)
         self.assertEqual(response.status_code, 200, response.text)
         # Auth, role, locked rehearsal, participant validation, locked attendance,
-        # response metadata and participant functions: seven SELECTs, regardless of count.
+        # recipient lookup, response metadata and participant functions: eight SELECTs,
+        # regardless of how many participants are added.
         selects = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
-        self.assertEqual(len(selects), 7)
+        self.assertEqual(len(selects), 8)
 
     def test_patch_cors_preflight(self):
         response = self.client.options("/rehearsals/301", headers={

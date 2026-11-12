@@ -73,6 +73,9 @@ class NotificationConnectionManager:
     def connection_count(self, user_id):
         return len(self._connections.get(user_id, ()))
 
+    def has_connections(self):
+        return bool(self._connections)
+
     async def close(self, connection, code=1008):
         self.disconnect(connection)
         async with connection.send_lock:

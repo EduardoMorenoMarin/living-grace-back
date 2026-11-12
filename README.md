@@ -944,9 +944,9 @@ extensible without introducing a PostgreSQL enum. Composite indexes
 and newest-first pagination.
 
 Listing, unread count, individual mark-read, and bulk mark-read are implemented.
-Authenticated WebSocket delivery is available as described below; no event
-producers are connected. Tests create rows
-directly; no production fixtures or notifications are inserted automatically.
+Authenticated WebSocket delivery is available as described below. Assignment
+producers now generate rehearsal assignment notifications (see below). Other
+notification types in tests are inserted directly; no production fixtures are seeded.
 
 Run `.venv/bin/python -m unittest discover -s tests -p test_notifications.py`.
 To additionally execute the SQL migration and verify defaults, indexes, foreign
@@ -1003,8 +1003,8 @@ return 422. The existing static unread-count route remains before dynamic routes
 Subsequent `GET /notifications` responses show `is_read=true`, unread-filtered
 lists omit the notification, and `GET /notifications/unread-count` decreases once
 when an unread notification is marked read. Repeated updates do not decrease it
-again. Individual marking uses the existing schema and no producers or
-WebSockets.
+again. Individual marking uses the existing schema; real-time delivery and
+assignment producers are documented separately below.
 
 
 ### Notifications: mark all unread as read
@@ -1038,8 +1038,8 @@ Afterward, `GET /notifications` shows the updated read flags and
 `GET /notifications/unread-count` returns zero unless new unread notifications
 have arrived. Authentication failures return 401, mandatory password change
 returns 403, and database errors return a sanitized 500
-(`Unable to update notifications.`). No database schema changes, migrations,
-WebSockets, or notification producers are introduced.
+(`Unable to update notifications.`). Marking notifications read does not emit
+WebSocket events or create additional notifications.
 
 
 ### Real-time notifications: WebSocket
@@ -1047,7 +1047,8 @@ WebSockets, or notification producers are introduced.
 `WS /ws/notifications` is a user-scoped server-to-client stream. Existing HTTP
 notification endpoints retain their behavior. PostgreSQL remains the source of
 truth; opening a socket and receiving events never mark notifications as read.
-There are no rehearsal, membership, or attendance producers in this step.
+Rehearsal assignment producers are connected as described below. Membership,
+attendance, rehearsal metadata changes, and cancellations do not produce events.
 
 #### Authentication flow
 
@@ -1163,7 +1164,8 @@ Example event:
 
 `NotificationDeliveryService.publish_created(notification_id)` is the reusable
 async delivery entry point, assembled by `get_notification_delivery_service()`.
-Future producers must persist and COMMIT the notification before calling it.
+Rehearsal assignment producers, and any future producers, must persist and COMMIT
+the notification before calling it.
 The service opens an independent database session, reads the committed row and
 its owner, builds the explicit event schema, and sends only to that owner's
 connections. PostgreSQL's default READ COMMITTED isolation prevents an uncommitted
@@ -1192,8 +1194,82 @@ headers, with suitable idle timeouts. Ticket storage and the connection registry
 are process-local and reset on restart. Multiple workers or instances require a
 shared single-use ticket store AND a shared event broker such as Redis Pub/Sub
 (or equivalent routing); sticky routing alone is not a complete delivery design.
-Redis, Celery, background producers, and schema migrations are not introduced.
+Redis, Celery, background workers, and additional schema migrations are not introduced.
 
 Run `.venv/bin/python -m unittest discover -s tests -p test_notification_realtime.py`
 for socket/ticket/commit-isolation coverage and the existing notification tests
 for HTTP regressions.
+
+
+### Automatic rehearsal assignment notifications
+
+The existing validated assignment flows now create `REHEARSAL_ASSIGNED`
+notifications:
+
+- `RehearsalCreator.create()` (`POST /rehearsals`): every selected participant is
+  newly assigned and receives one notification.
+- `RehearsalUpdateService.update()` (`PATCH /rehearsals/{id}`): only membership IDs
+  newly added to the participant list receive notifications. A simultaneous rename
+  is reflected in the new participants' assignment messages; existing participants
+  do not receive a rehearsal-update notification.
+
+The recipient user IDs come from assigned ministry memberships after existing
+eligibility validation, never a client notification recipient field. One bulk
+lookup deduplicates user IDs and checks that each membership has an assignment
+row for the same rehearsal/ministry. Duplicate participant IDs remain invalid.
+Unchanged lists, list reordering, metadata-only changes, removals, attendance,
+QR self-check-in (including walk-ins), and memberships generate no notifications.
+Re-adding a previously removed participant is a new assignment and notifies again.
+Creating a new rehearsal is still a new operation: this does not add an idempotency
+key or deduplicate repeated rehearsal-creation requests.
+
+Example persisted notification:
+
+```json
+{
+  "id": 42,
+  "user_id": 102,
+  "type": "REHEARSAL_ASSIGNED",
+  "title": "New rehearsal assignment",
+  "message": "You have been assigned to rehearsal \"Sunday worship practice\".",
+  "resource_type": "rehearsal",
+  "resource_id": 306,
+  "is_read": false,
+  "created_at": "2026-11-12T21:00:00Z"
+}
+```
+
+The internal `user_id` is omitted from HTTP and WebSocket notification payloads.
+Assignment and notification rows are inserted/flushed in the same SQLAlchemy
+session and transaction. Notification helpers never commit independently. Any
+assignment, notification insert, response-construction, or commit failure rolls
+back both. The existing rehearsal lock serializes participant updates; additions
+are computed from the locked current assignments, preventing duplicate notices
+for unchanged assignments on repeated or concurrent updates.
+
+Only after the rehearsal transaction exits successfully does
+`NotificationService.publish_after_commit()` invoke
+`NotificationDeliveryService.publish_created(id)` for each new notification.
+FastAPI's synchronous request worker uses AnyIO to execute the async delivery on
+the application's existing event loop. Delivery uses a separate session to read
+the committed notification and its owner. When no sockets are connected it skips
+the extra delivery lookup. A custom standalone service composition must inject a
+publisher to opt into live delivery; persistence is enabled by default.
+
+Online clients receive the existing `notification.created` event with
+`data.notification_type = "REHEARSAL_ASSIGNED"` and the fields above (without
+`user_id`, and with `notification_type` replacing `type` inside `data`). Each
+recipient's connected tabs/devices receive the event; other users do not.
+Offline recipients still see the unread notification through `GET /notifications`
+and `GET /notifications/unread-count`. The existing frontend example handles the
+event by refetching those endpoints. After reconnect, always refetch both.
+
+Delivery is inline and best effort: slow sockets can add response latency, but a
+delivery failure cannot roll back the committed assignment/notification or prevent
+a delivery attempt for the next recipient. A process crash between commit and
+send can lose the live event; persisted notifications remain available. There is
+no outbox, replay worker, or cross-process broker. Single-worker deployment remains
+required. No new endpoints, migrations, or other notification producers are added.
+
+Run `.venv/bin/python -m unittest discover -s tests -p test_rehearsal_notifications.py`
+for assignment/notification atomicity and live WebSocket delivery coverage.

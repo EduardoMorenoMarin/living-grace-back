@@ -1,21 +1,27 @@
 from datetime import datetime, timezone
 
 from app.core.exceptions import RehearsalAttendanceConflict, RehearsalNotFound, RehearsalValidationError
+from app.repositories.notification import NotificationRepository
 from app.repositories.rehearsal import RehearsalRepository
 from app.repositories.rehearsal_read import RehearsalReadRepository
 from app.schemas.rehearsal_read import AdminRehearsalDetail
 from app.schemas.rehearsal_update import RehearsalUpdate
 from app.services.rehearsal_read import RehearsalReadService, RehearsalViewer
+from app.services.notification import NotificationService
 
 
 class RehearsalUpdateService:
     def __init__(
         self, repository: RehearsalRepository, reads: RehearsalReadRepository,
         reader: RehearsalReadService,
+        notifications: NotificationService | None = None,
     ):
         self.repository = repository
         self.reads = reads
         self.reader = reader
+        self.notifications = notifications if notifications is not None else NotificationService(
+            NotificationRepository(repository.db),
+        )
 
     def update(self, rehearsal_id: int, user_id: int, data: RehearsalUpdate) -> AdminRehearsalDetail:
         with self.repository.transaction():
@@ -53,6 +59,8 @@ class RehearsalUpdateService:
                 self.repository.remove_attendance([row.id for row in removed])
             if added:
                 self.repository.add_attendance(rehearsal.id, added)
+            notification_ids = self.notifications.create_rehearsal_assignments(rehearsal, added)
             self.repository.flush()
             result = self.reader.get_visible(RehearsalViewer(user_id, True), rehearsal.id)
+        self.notifications.publish_after_commit(notification_ids)
         return result

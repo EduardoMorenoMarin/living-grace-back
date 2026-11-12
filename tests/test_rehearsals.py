@@ -25,6 +25,7 @@ from app.core.config import settings
 from app.core.database import Base, engine as postgres_engine
 from app.dependencies.database import get_db
 from app.dependencies.rehearsals import get_rehearsal_creator
+from app.dependencies.notification import get_notification_service
 from app.main import app
 from app.models.ministry import Ministry
 from app.models.enums import MembershipStatus, MinistryStatus, RoleScope, RoleStatus, UserStatus
@@ -317,7 +318,7 @@ class RehearsalContract:
 
     def test_subtype_logs_only_successful_creation(self):
         with self.session_factory() as db:
-            self.assertIsInstance(get_rehearsal_creator(db), LoggingRehearsalCreator)
+            self.assertIsInstance(get_rehearsal_creator(db, get_notification_service(db)), LoggingRehearsalCreator)
         with patch("app.services.rehearsal_creation.logger.info") as log:
             response = self.post()
             self.assertEqual(response.status_code, 201)

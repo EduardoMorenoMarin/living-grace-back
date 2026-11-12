@@ -3,7 +3,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import NotificationNotFound, NotificationPersistenceError
+from app.models.ministry_member import MinistryMember
 from app.models.notification import Notification
+from app.models.rehearsal_attendance import RehearsalAttendance
 
 
 class NotificationRepository:
@@ -13,6 +15,21 @@ class NotificationRepository:
     def get_for_delivery(self, notification_id: int) -> Notification | None:
         # Internal server-only lookup; the persisted row determines the recipient.
         return self.db.get(Notification, notification_id)
+
+    def assignment_user_ids(self, rehearsal_id: int, ministry_id: int, member_ids: list[int]) -> list[int]:
+        # Only memberships already assigned in this transaction can be recipients.
+        return list(self.db.scalars(select(MinistryMember.user_id).join(
+            RehearsalAttendance, RehearsalAttendance.ministry_member_id == MinistryMember.id,
+        ).where(
+            MinistryMember.id.in_(member_ids), MinistryMember.ministry_id == ministry_id,
+            RehearsalAttendance.rehearsal_id == rehearsal_id,
+        ).distinct().order_by(MinistryMember.user_id)))
+
+    def add_many(self, notifications: list[Notification]) -> list[int]:
+        # The caller owns the assignment transaction, including commit/rollback.
+        self.db.add_all(notifications)
+        self.db.flush()
+        return [notification.id for notification in notifications]
 
     def unread_count(self, user_id: int) -> int:
         return self.db.scalar(select(func.count()).select_from(Notification).where(
