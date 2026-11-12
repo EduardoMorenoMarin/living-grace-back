@@ -9,6 +9,7 @@ from app.api.routes.ministries import router as ministries_router
 from app.api.routes.rehearsals import router as rehearsals_router
 from app.api.routes.attendance import router as attendance_router
 from app.api.routes.dashboard import router as dashboard_router
+from app.api.routes.notifications import router as notifications_router
 from app.core.config import settings
 
 
@@ -25,6 +26,7 @@ app.include_router(ministries_router)
 app.include_router(rehearsals_router)
 app.include_router(attendance_router)
 app.include_router(dashboard_router)
+app.include_router(notifications_router)
 
 
 @app.middleware("http")

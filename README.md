@@ -866,3 +866,89 @@ Example personal summary (one on-time check-in and one inferred absence):
 Reads never persist effective statuses. No migrations, backfills, schedulers, or
 new endpoints are required. Existing ministry visibility, membership checks,
 participant totals, and assignment/deletion protections remain unchanged.
+
+### Notifications: list endpoint
+
+`GET /notifications` requires the existing JWT `get_current_user` dependency,
+including stale-token checks and the mandatory-password-change restriction.
+It needs no global role: even admins can read only their own notifications.
+The server derives ownership from the authenticated user; `user_id` is not a
+supported query parameter and cannot select another user's records.
+
+Query parameters:
+
+- `limit`: default 20, range 1–100.
+- `offset`: default 0, nonnegative BIGINT range.
+- `is_read`: optional boolean; omit for all notifications.
+
+Items are ordered by `created_at DESC, id DESC`. `total` counts all matching
+notifications for the authenticated user and optional filter, before pagination.
+An offset beyond the results returns an empty `items` list with the same total.
+The response omits the internal owner ID and normalizes timestamps to UTC.
+Listing does not mark items as read; responses use `Cache-Control: no-store`.
+
+Example `GET /notifications?limit=20&offset=0&is_read=false`:
+
+```json
+{
+  "total": 1,
+  "limit": 20,
+  "offset": 0,
+  "items": [
+    {
+      "id": 42,
+      "type": "REHEARSAL_ASSIGNED",
+      "title": "Rehearsal assignment",
+      "message": "You have been assigned to a rehearsal.",
+      "resource_type": "rehearsal",
+      "resource_id": 301,
+      "is_read": false,
+      "created_at": "2026-11-15T17:00:00Z"
+    }
+  ]
+}
+```
+
+Invalid pagination/filter values return 422; authentication failures return 401;
+mandatory password change returns 403; notification query failures return a
+sanitized 500 (`Unable to retrieve notifications.`). Two notification SELECTs
+(count and page) keep query count constant. Offset pagination is deterministic
+for unchanged data; new inserts can shift later pages.
+
+#### Notifications database migration
+
+This repository has no Alembic configuration or migration runner. Apply the
+versioned PostgreSQL SQL migration `migrations/001_create_notifications.sql`
+once to the existing schema before enabling this endpoint. With a PostgreSQL
+connection URI in `PGDATABASE`, use:
+
+```bash
+psql -v ON_ERROR_STOP=1 -f migrations/001_create_notifications.sql
+```
+
+Use a PostgreSQL URI (`postgresql://...`), not SQLAlchemy's
+`postgresql+psycopg://...` URI, with psql. The migration is transactional, targets
+the connection's current schema (normally `public`), requires the existing
+`users(id BIGINT)` table, and intentionally fails if `notifications` already
+exists. It does not alter existing tables. No DDL runs at application startup.
+
+`notifications` uses a BIGINT identity primary key, a required `user_id` foreign
+key to `users(id)` with `ON DELETE CASCADE`, required text `type`, `title`, and
+`message`, nullable text `resource_type`, nullable BIGINT `resource_id`, required
+`is_read BOOLEAN DEFAULT false`, and required `created_at TIMESTAMPTZ DEFAULT
+now()`. Resources are optional polymorphic references, not foreign keys; future
+resource endpoints must apply their own authorization. Type strings remain
+extensible without introducing a PostgreSQL enum. Composite indexes
+`ix_notifications_user_created_at_id` and
+`ix_notifications_user_is_read_created_at_id` support ownership, filtering,
+and newest-first pagination.
+
+Only listing is implemented in this step. There are no event producers, unread
+count endpoint, mark-read endpoints, or WebSocket connections. Tests create rows
+directly; no production fixtures or notifications are inserted automatically.
+
+Run `.venv/bin/python -m unittest discover -s tests -p test_notifications.py`.
+To additionally execute the SQL migration and verify defaults, indexes, foreign
+keys, and ORM queries on PostgreSQL, set `NOTIFICATIONS_TEST_DATABASE_URL` to a
+scratch SQLAlchemy PostgreSQL URL. That opt-in test creates and removes only a
+unique test schema; it never falls back to the application's `DATABASE_URL`.

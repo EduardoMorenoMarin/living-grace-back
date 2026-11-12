@@ -1,3 +1,4 @@
+from app.models.notification import Notification
 from app.models.function import Function
 from app.models.ministry import Ministry
 from app.models.ministry_member import MinistryMember
@@ -10,6 +11,7 @@ from app.models.role import Role
 from app.models.user import User
 
 __all__ = [
+    "Notification",
     "Function",
     "Ministry",
     "MinistryMember",
