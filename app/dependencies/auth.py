@@ -5,11 +5,13 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 from app.core.config import settings
 from app.dependencies.database import get_db
 from app.models.user import User
 from app.services.token import TokenService
+from app.repositories.account_eligibility import eligible_account_conditions
 
 
 bearer = HTTPBearer(auto_error=False)
@@ -36,7 +38,9 @@ def get_authenticated_user(
     except (jwt.InvalidTokenError, ValueError, TypeError):
         raise unauthorized from None
     try:
-        user = db.get(User, user_id)
+        user = db.execute(select(User).where(
+            User.id == user_id, *eligible_account_conditions(),
+        ).execution_options(populate_existing=True)).scalar_one_or_none()
     except SQLAlchemyError:
         raise HTTPException(status_code=500, detail="Unable to authenticate user.") from None
     if user is None or not TokenService(settings).matches_credentials(

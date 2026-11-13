@@ -347,7 +347,7 @@ class MinistryMembersTests(unittest.TestCase):
             }, listing.json()["members"])
         self.assertEqual(self.db.get(MinistryMember, existing.id).status, MembershipStatus.PENDING)
         user_headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(body['id'], self.db.get(User, body['id']).password_hash)}"}
-        self.assertEqual(self.client.get("/ministries/1/members", headers=user_headers).status_code, 403)
+        self.assertEqual(self.client.get("/ministries/1/members", headers=user_headers).status_code, 401)
 
     def test_all_status_transitions_are_idempotent_and_preserve_assignments(self):
         from app.repositories.authorization import AuthorizationRepository
@@ -376,7 +376,9 @@ class MinistryMembersTests(unittest.TestCase):
                     self.assertIsNone(function.revoked_at)
                     self.assertEqual(AuthorizationRepository(self.db).has_global_role(member.user_id, "USER"),
                                      target == MembershipStatus.ACTIVE)
-                    self.assertEqual(self.db.get(User, member.user_id).status, UserStatus.ACTIVE)
+                    self.assertEqual(self.db.get(User, member.user_id).status,
+                                     UserStatus.ACTIVE if source == target or target == MembershipStatus.ACTIVE
+                                     else UserStatus.PENDING)
 
     def test_last_effective_admin_cannot_be_demoted(self):
         for status in ("PENDING", "INACTIVE"):
@@ -394,14 +396,14 @@ class MinistryMembersTests(unittest.TestCase):
         backup.status = MembershipStatus.ACTIVE
         self.db.commit()
         self.assertEqual(self.approve(self.admin.id, ministry_id=2, payload={"status": "INACTIVE"}).status_code, 200)
-        self.assertEqual(self.get().status_code, 403)
+        self.assertEqual(self.get().status_code, 401)
 
     def test_pending_user_cannot_approve_self(self):
         member = self.member(status=MembershipStatus.PENDING)
         self.db.add(MinistryMemberRole(id=701, ministry_member_id=member.id, role_id=38))
         self.db.commit()
         headers = {"Authorization": f"Bearer {TokenService(settings).create_access_token(member.user_id, self.db.get(User, member.user_id).password_hash)}"}
-        self.assertEqual(self.approve(member.id, headers=headers).status_code, 403)
+        self.assertEqual(self.approve(member.id, headers=headers).status_code, 401)
         self.assertEqual(self.db.get(MinistryMember, member.id).status, MembershipStatus.PENDING)
 
     def test_admin_cannot_approve_own_pending_membership(self):

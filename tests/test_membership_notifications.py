@@ -65,8 +65,8 @@ class MembershipNotificationTests(unittest.TestCase):
         self.assertEqual({row.user_id for row in notices}, {101, 103})
         self.assertEqual(len(notices), 2)
         for row in notices:
-            self.assertEqual(row.title, "New membership request")
-            self.assertEqual(row.message, "A new user has requested to join your ministry.")
+            self.assertEqual(row.title, "Nueva solicitud de ingreso")
+            self.assertEqual(row.message, "Un nuevo usuario ha solicitado ingresar a tu ministerio.")
             self.assertEqual(row.resource_type, "ministry")
             self.assertEqual(row.resource_id, 11)
             self.assertFalse(row.is_read)
@@ -148,8 +148,8 @@ class MembershipNotificationTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0].user_id, body["id"])
         row = rows[0]
-        self.assertEqual(row.title, "Membership approved")
-        self.assertEqual(row.message, "Your membership request has been approved.")
+        self.assertEqual(row.title, "Solicitud de ingreso aprobada")
+        self.assertEqual(row.message, "Tu solicitud de ingreso al ministerio ha sido aprobada.")
         self.assertEqual(row.resource_type, "ministry")
         self.assertEqual(row.resource_id, 11)
         self.assertFalse(row.is_read)
@@ -230,11 +230,13 @@ class MembershipNotificationTests(unittest.TestCase):
                     delivered.append((row.type, row.user_id, status))
             return await original_publish(notification_id)
         with self.connect(admin_ticket) as admin, patch.object(self.delivery, "publish_created", side_effect=verify_commit):
-            body = self.requested()
-            self.assertEqual(len(delivered), 2)
+            body = self.requested((11, 12))
+            self.assertEqual(len(delivered), 3)
             event = admin.receive_json()
             self.assertEqual(event["data"]["notification_type"], "MEMBERSHIP_PENDING")
             self.assertEqual(event["data"]["resource_id"], 11)
+            admin.receive_json()  # pending notice for ministry 12
+            self.assertEqual(self.approve(body["memberships"][1]["id"], ministry_id=12).status_code, 200)
             self.login(body["id"])
             user_ticket = self.ticket()
             self.login(101)

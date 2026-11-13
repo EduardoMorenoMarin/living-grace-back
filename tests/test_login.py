@@ -112,8 +112,8 @@ class LoginTests(unittest.TestCase):
     def test_email_login_and_identifier_whitespace(self):
         self.assertEqual(self.login(identifier=f"  {self.account['email']}  ").status_code, 200)
         statement = self.db.scalar.call_args.args[0]
-        self.assertEqual(set(statement.compile().params.values()), {self.account["email"]})
-        self.assertEqual(str(statement.whereclause), "users.email = :email_1")
+        self.assertEqual(statement.compile().params["email_1"], self.account["email"])
+        self.assertIn("EXISTS", str(statement.whereclause))
         self.assert_session_released_without_writes()
 
     def test_incorrect_password(self):
@@ -146,13 +146,13 @@ class LoginTests(unittest.TestCase):
                 self.assertNotIn("input", error)
         self.db.scalar.assert_not_called()
 
-    def test_current_behavior_inactive_account_is_accepted(self):
+    def test_inactive_account_is_rejected(self):
         self.user.status = UserStatus.INACTIVE
-        self.assertEqual(self.login().status_code, 200)
+        self.assertEqual(self.login().status_code, 401)
 
-    def test_current_behavior_deleted_account_is_accepted(self):
+    def test_deleted_account_is_rejected(self):
         self.user.deleted_at = datetime.now(timezone.utc)
-        self.assertEqual(self.login().status_code, 200)
+        self.assertEqual(self.login().status_code, 401)
 
     def test_current_behavior_malformed_hash_returns_500(self):
         self.user.password_hash = "not-a-supported-password-hash"
@@ -216,6 +216,17 @@ class PostgreSQLLoginTests(unittest.TestCase):
         response = self.registration_client.post("/users/register", json=self.account)
         self.assertEqual(response.status_code, 201)
         self.user_id = response.json()["id"]
+        # Registration now creates a PENDING account. This login contract seeds
+        # an approved membership explicitly; activation HTTP behavior has its own tests.
+        from app.models import Ministry, MinistryMember
+        from app.models.enums import MembershipStatus
+        with session_factory() as db:
+            ministry = Ministry(name="Login fixture " + uuid4().hex)
+            db.add(ministry)
+            db.flush()
+            db.add(MinistryMember(user_id=self.user_id, ministry_id=ministry.id, status=MembershipStatus.ACTIVE))
+            db.get(User, self.user_id).status = UserStatus.ACTIVE
+            db.commit()
 
     def test_registered_argon2id_account_login_and_session_cleanup(self):
         snapshot = self.connection.execute(

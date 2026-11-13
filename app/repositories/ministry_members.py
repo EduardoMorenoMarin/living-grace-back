@@ -16,6 +16,7 @@ from app.models.user import User
 from app.models.role import Role
 from app.models.enums import RoleScope
 from app.repositories.authorization import AuthorizationRepository
+from app.repositories.account_eligibility import active_membership_exists
 
 
 class MinistryMembersRepository:
@@ -33,7 +34,7 @@ class MinistryMembersRepository:
                 MinistryMember.ministry_id == ministry_id,
                 MinistryMember.status == status,
                 MinistryMember.deleted_at.is_(None),
-                User.status == UserStatus.ACTIVE, User.deleted_at.is_(None),
+                User.status.in_([UserStatus.PENDING, UserStatus.ACTIVE]), User.deleted_at.is_(None),
             ).subquery()
         )
         statement = (
@@ -80,12 +81,15 @@ class MinistryMembersRepository:
                     MinistryMember.id == membership_id,
                     MinistryMember.ministry_id == ministry_id,
                     MinistryMember.deleted_at.is_(None),
-                    User.status == UserStatus.ACTIVE, User.deleted_at.is_(None),
+                    User.status.in_([UserStatus.PENDING, UserStatus.ACTIVE]), User.deleted_at.is_(None),
                     Ministry.status == MinistryStatus.ACTIVE, Ministry.deleted_at.is_(None),
                 ).with_for_update().execution_options(populate_existing=True)
             )
             if membership is None:
                 raise MembershipNotFound("Membership does not exist or is unavailable.")
+            # The joined FOR UPDATE locks also serialize changes to this user.
+            # Suspended/deleted accounts were excluded above and are never revived.
+            user = self.db.get(User, membership.user_id)
             if membership.status != status:
                 was_pending = membership.status == MembershipStatus.PENDING
                 if status == MembershipStatus.ACTIVE and membership.user_id == actor_user_id:
@@ -96,6 +100,12 @@ class MinistryMembersRepository:
                         raise MembershipTransitionConflict("Cannot remove the last effective global ADMIN privilege.")
                 membership.status = status
                 membership.updated_at = func.now()
+                self.db.flush()
+                account_status = (UserStatus.ACTIVE if self.db.scalar(select(active_membership_exists(user.id)))
+                                  else UserStatus.PENDING)
+                if user.status != account_status:
+                    user.status = account_status
+                    user.updated_at = func.now()
                 if was_pending and status == MembershipStatus.ACTIVE and on_approved is not None:
                     notification_ids = on_approved(membership)
             self.db.commit()

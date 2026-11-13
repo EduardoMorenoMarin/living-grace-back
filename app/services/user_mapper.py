@@ -1,12 +1,14 @@
 from app.models.user import User
 from app.schemas.user import UserCreate
+from app.models.enums import UserStatus
 
 
 class UserMapper:
-    """Map registration fields into a user, leaving database defaults intact."""
+    """New registrations await approval of their first active membership."""
 
     def to_user(self, data: UserCreate, password_hash: str) -> User:
         return User(
+            status=UserStatus.PENDING,
             email=str(data.email),
             password_hash=password_hash,
             first_name=data.first_name,

@@ -25,8 +25,8 @@ class NotificationService:
         if not recipients:
             return []
         return self.repository.add_many([
-            Notification(user_id=row["user_id"], type="MEMBERSHIP_PENDING", title="New membership request",
-                         message="A new user has requested to join your ministry.", resource_type="ministry",
+            Notification(user_id=row["user_id"], type="MEMBERSHIP_PENDING", title="Nueva solicitud de ingreso",
+                         message="Un nuevo usuario ha solicitado ingresar a tu ministerio.", resource_type="ministry",
                          resource_id=row["ministry_id"], is_read=False)
             for row in recipients
         ])
@@ -34,27 +34,27 @@ class NotificationService:
     def create_membership_approved(self, membership: MinistryMember) -> list[int]:
         # Called only for a locked, validated PENDING -> ACTIVE transition.
         return self.repository.add_many([
-            Notification(user_id=membership.user_id, type="MEMBERSHIP_APPROVED", title="Membership approved",
-                         message="Your membership request has been approved.", resource_type="ministry",
+            Notification(user_id=membership.user_id, type="MEMBERSHIP_APPROVED", title="Solicitud de ingreso aprobada",
+                         message="Tu solicitud de ingreso al ministerio ha sido aprobada.", resource_type="ministry",
                          resource_id=membership.ministry_id, is_read=False),
         ])
 
     def create_rehearsal_assignments(self, rehearsal: Rehearsal, new_member_ids: list[int]) -> list[int]:
         return self._create_rehearsal_notifications(
-            rehearsal, new_member_ids, "REHEARSAL_ASSIGNED", "New rehearsal assignment",
-            f'You have been assigned to rehearsal "{rehearsal.name}".',
+            rehearsal, new_member_ids, "REHEARSAL_ASSIGNED", "Nuevo ensayo asignado",
+            f'Se te ha asignado el ensayo "{rehearsal.name}".',
         )
 
     def create_rehearsal_updates(self, rehearsal: Rehearsal, retained_member_ids: list[int]) -> list[int]:
         return self._create_rehearsal_notifications(
-            rehearsal, retained_member_ids, "REHEARSAL_UPDATED", "Rehearsal updated",
-            f'The details of your rehearsal "{rehearsal.name}" have changed.',
+            rehearsal, retained_member_ids, "REHEARSAL_UPDATED", "Ensayo actualizado",
+            f'Los detalles de tu ensayo "{rehearsal.name}" han cambiado.',
         )
 
     def create_rehearsal_cancellations(self, rehearsal: Rehearsal, member_ids: list[int]) -> list[int]:
         return self._create_rehearsal_notifications(
-            rehearsal, member_ids, "REHEARSAL_CANCELLED", "Rehearsal canceled",
-            f'Your rehearsal "{rehearsal.name}" has been canceled.',
+            rehearsal, member_ids, "REHEARSAL_CANCELLED", "Ensayo cancelado",
+            f'Tu ensayo "{rehearsal.name}" ha sido cancelado.',
         )
 
     def _create_rehearsal_notifications(self, rehearsal, member_ids, notification_type, title, message):

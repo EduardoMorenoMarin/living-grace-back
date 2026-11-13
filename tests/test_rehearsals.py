@@ -334,10 +334,10 @@ class RehearsalContract:
 
 
 class SQLiteRehearsalTests(RehearsalContract, unittest.TestCase):
-    def assert_forbidden_without_insert(self):
+    def assert_forbidden_without_insert(self, expected_status=403):
         with patch.object(RehearsalRepository, "add") as add:
             response = self.post()
-        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(response.status_code, expected_status, response.text)
         add.assert_not_called()
         self.assertEqual(self.rows(), [])
 
@@ -394,7 +394,7 @@ class SQLiteRehearsalTests(RehearsalContract, unittest.TestCase):
                     original = getattr(member, attribute)
                     setattr(member, attribute, value)
                     db.commit()
-                self.assert_forbidden_without_insert()
+                self.assert_forbidden_without_insert(401)
                 with self.session_factory() as db:
                     setattr(db.get(MinistryMember, self.member_id), attribute, original)
                     db.commit()
@@ -412,7 +412,7 @@ class SQLiteRehearsalTests(RehearsalContract, unittest.TestCase):
                     original = getattr(entity, attribute)
                     setattr(entity, attribute, value)
                     db.commit()
-                self.assert_forbidden_without_insert()
+                self.assert_forbidden_without_insert(401)
                 with self.session_factory() as db:
                     setattr(db.get(model, identifier), attribute, original)
                     db.commit()
@@ -442,7 +442,7 @@ class SQLiteRehearsalTests(RehearsalContract, unittest.TestCase):
             db.flush()
             db.get(MinistryMember, self.member_id).user_id = other.id
             db.commit()
-        self.assert_forbidden_without_insert()
+        self.assert_forbidden_without_insert(401)
 
     def test_role_changes_apply_to_existing_jwt(self):
         with self.session_factory() as db:

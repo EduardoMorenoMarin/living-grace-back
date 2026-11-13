@@ -36,8 +36,8 @@ class RehearsalChangeNotificationTests(unittest.TestCase):
         self.assertEqual({row.user_id for row in rows}, {102, 104})
         self.assertEqual(len(rows), 2)
         for row in rows:
-            self.assertEqual(row.title, "Rehearsal updated")
-            self.assertEqual(row.message, 'The details of your rehearsal "Sunday practice" have changed.')
+            self.assertEqual(row.title, "Ensayo actualizado")
+            self.assertEqual(row.message, 'Los detalles de tu ensayo "Sunday practice" han cambiado.')
             self.assertEqual(row.resource_type, "rehearsal")
             self.assertEqual(row.resource_id, 301)
             self.assertFalse(row.is_read)
@@ -102,8 +102,8 @@ class RehearsalChangeNotificationTests(unittest.TestCase):
         self.assertEqual(len(rows), 3)
         self.assertEqual({row.user_id for row in rows}, {102, 103, 104})
         for row in rows:
-            self.assertEqual(row.title, "Rehearsal canceled")
-            self.assertEqual(row.message, 'Your rehearsal "Sunday worship practice" has been canceled.')
+            self.assertEqual(row.title, "Ensayo cancelado")
+            self.assertEqual(row.message, 'Tu ensayo "Sunday worship practice" ha sido cancelado.')
             self.assertEqual(row.resource_id, rehearsal_id)
             self.assertEqual(row.resource_type, "rehearsal")
             self.assertFalse(row.is_read)

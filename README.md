@@ -491,8 +491,8 @@ rollback-protected fixtures without schema changes.
 
 Both endpoints require `Authorization: Bearer <access_token>` and the existing
 GLOBAL ADMIN dependency, which checks current database privileges. Registration
-creates PENDING memberships with automatic GLOBAL USER role assignment and ACTIVE
-user accounts. Registration rejects membership status overrides. Existing memberships
+creates PENDING memberships with automatic GLOBAL USER role assignment and PENDING
+user accounts. Approval of the first active membership activates the account. Registration rejects membership status overrides. Existing memberships
 are unchanged. Approval makes the existing USER assignment effective without inserting
 another assignment; JWT claims and login responses are unchanged.
 
@@ -535,7 +535,8 @@ Status changes serialize on the global ADMIN role rows to protect concurrent
 demotions. PENDING and INACTIVE memberships grant no ministry access or global roles.
 Invalid statuses, extra body fields, and invalid path IDs return 422. Missing,
 wrong-ministry, or deleted memberships and unavailable users/ministries return 404.
-Users and ministries must be ACTIVE and not deleted; listings apply the same
+Target accounts may be PENDING or ACTIVE; suspended/deleted accounts are excluded.
+Ministries must be ACTIVE and not deleted; listings apply the same
 eligibility checks. Authentication failures return 401, and authenticated users
 without GLOBAL ADMIN privileges receive 403. Database failures return a generic 500
 and roll back the transaction. Approval locks eligibility rows through commit and
@@ -544,7 +545,8 @@ preserves membership identity, function assignments, role assignments, and atten
 Frontend: use the returned `ministry_member_id` in the approval URL, send the existing
 bearer token, and refresh both PENDING and ACTIVE lists after a successful approval.
 Handle 409 by preserving an effective global administrator; never infer backend permission from a
-frontend role check. No schema migration or Supabase change is required.
+frontend role check. Membership-based account activation requires the user_status
+enum extension documented below; no migration runs automatically.
 
 Local workflow coverage:
 
@@ -898,8 +900,8 @@ Example `GET /notifications?limit=20&offset=0&is_read=false`:
     {
       "id": 42,
       "type": "REHEARSAL_ASSIGNED",
-      "title": "Rehearsal assignment",
-      "message": "You have been assigned to a rehearsal.",
+      "title": "Nuevo ensayo asignado",
+      "message": "Se te ha asignado un ensayo.",
       "resource_type": "rehearsal",
       "resource_id": 301,
       "is_read": false,
@@ -1151,8 +1153,8 @@ Example event:
   "data": {
     "id": 42,
     "notification_type": "REHEARSAL_ASSIGNED",
-    "title": "New rehearsal",
-    "message": "You have been assigned to a rehearsal.",
+    "title": "Nuevo ensayo asignado",
+    "message": "Se te ha asignado un ensayo.",
     "resource_type": "rehearsal",
     "resource_id": 301,
     "is_read": false,
@@ -1232,8 +1234,8 @@ Example persisted notification:
   "id": 42,
   "user_id": 102,
   "type": "REHEARSAL_ASSIGNED",
-  "title": "New rehearsal assignment",
-  "message": "You have been assigned to rehearsal \"Sunday worship practice\".",
+  "title": "Nuevo ensayo asignado",
+  "message": "Se te ha asignado el ensayo \"Sunday worship practice\".",
   "resource_type": "rehearsal",
   "resource_id": 306,
   "is_read": false,
@@ -1299,8 +1301,8 @@ Example notification fields (IDs and timestamps are assigned by the database):
 ```json
 {
   "type": "REHEARSAL_UPDATED",
-  "title": "Rehearsal updated",
-  "message": "The details of your rehearsal \"Sunday practice\" have changed.",
+  "title": "Ensayo actualizado",
+  "message": "Los detalles de tu ensayo \"Sunday practice\" han cambiado.",
   "resource_type": "rehearsal",
   "resource_id": 306
 }
@@ -1316,8 +1318,8 @@ assignment rows cascade away, in the same transaction as the deletion.
 ```json
 {
   "type": "REHEARSAL_CANCELLED",
-  "title": "Rehearsal canceled",
-  "message": "Your rehearsal \"Sunday practice\" has been canceled.",
+  "title": "Ensayo cancelado",
+  "message": "Tu ensayo \"Sunday practice\" ha sido cancelado.",
   "resource_type": "rehearsal",
   "resource_id": 306
 }
@@ -1378,8 +1380,8 @@ registration requests from producing duplicate notices.
 ```json
 {
   "type": "MEMBERSHIP_PENDING",
-  "title": "New membership request",
-  "message": "A new user has requested to join your ministry.",
+  "title": "Nueva solicitud de ingreso",
+  "message": "Un nuevo usuario ha solicitado ingresar a tu ministerio.",
   "resource_type": "ministry",
   "resource_id": 2
 }
@@ -1396,8 +1398,8 @@ can generate another approval notice.
 ```json
 {
   "type": "MEMBERSHIP_APPROVED",
-  "title": "Membership approved",
-  "message": "Your membership request has been approved.",
+  "title": "Solicitud de ingreso aprobada",
+  "message": "Tu solicitud de ingreso al ministerio ha sido aprobada.",
   "resource_type": "ministry",
   "resource_id": 2
 }
@@ -1433,8 +1435,8 @@ WebSocket events retain the existing envelope, for example:
   "data": {
     "id": 42,
     "notification_type": "MEMBERSHIP_APPROVED",
-    "title": "Membership approved",
-    "message": "Your membership request has been approved.",
+    "title": "Solicitud de ingreso aprobada",
+    "message": "Tu solicitud de ingreso al ministerio ha sido aprobada.",
     "resource_type": "ministry",
     "resource_id": 2,
     "is_read": false,
@@ -1452,3 +1454,122 @@ membership request workflow, introduce a migration, or add Redis/Celery workers.
 
 Run `.venv/bin/python -m unittest discover -s tests -p test_membership_notifications.py`
 for recipient scoping, transitions, rollback, and socket delivery tests.
+
+
+### Membership-based account activation
+
+`POST /users/register` now explicitly stores `users.status = PENDING`. Selected
+memberships remain PENDING and retain their existing function/USER-role assignments.
+The schema still permits registration without selecting a ministry; such an account
+also stays PENDING. There is no separate account-approval endpoint, and no new
+existing-user join workflow is introduced. A zero-membership account cannot become
+eligible through the existing approval endpoint until a membership exists; normal
+onboarding should select at least one ministry.
+
+Both `POST /auth/login` and every JWT-protected HTTP endpoint require:
+
+- An ACTIVE, nondeleted user account.
+- At least one ACTIVE, nondeleted membership in an ACTIVE, nondeleted ministry.
+
+The shared SQL predicate is in `app/repositories/account_eligibility.py`. Login
+returns the existing generic 401 `Invalid credentials.` without issuing a JWT for
+PENDING, INACTIVE, deleted, or membership-ineligible users. Existing JWTs use the
+same eligibility check and return the existing generic 401. These checks are reads;
+GET requests never modify account status. Global role/ministry authorization still
+applies after authentication. The notification ownership and WebSocket contracts
+are unchanged.
+
+An eligible global ADMIN uses the existing membership-status endpoint. PENDING
+accounts remain visible in ministry pending-member lists and can be approved.
+Within the repository's existing locked transaction, membership changes reconcile
+the affected account: ACTIVE if at least one eligible active membership remains,
+otherwise PENDING. INACTIVE accounts represent explicit suspension and are never
+reconciled into ACTIVE; deleted accounts are also excluded from activation. Existing
+suspension/deletion eligibility checks reject attempts to edit those accounts.
+Reactivating an INACTIVE membership may activate a PENDING account, but only
+PENDING-membership → ACTIVE-membership generates MEMBERSHIP_APPROVED. The member,
+account, and notification changes commit or roll back together.
+
+There is currently no membership delete/soft-delete or ministry status-management
+endpoint. For external/manual deletions or deactivations, runtime membership checks
+still block access immediately, even if a legacy ACTIVE account row has not yet
+been reconciled. Operators must reconcile stored account status in the same manual
+maintenance transaction or use the review script below. No database trigger,
+scheduler, or hidden write during authentication is introduced.
+
+#### Passwords, sessions, and pending clients
+
+Losing the last eligible active membership sets the account to PENDING through
+normal status management and rejects old JWTs. Password hashes and token claims do
+not change merely because of membership state. Unexpired tokens can become usable
+again after eligibility is restored; password changes/resets still permanently
+invalidate the previous credential version as before. Eligible users with
+`must_change_password = true` can still log in to finish the existing change-password
+flow; business access remains blocked until completion. Pending/suspended/deleted
+accounts cannot use that exception to bypass membership eligibility. Administrative
+password reset keeps its existing active-account restriction.
+
+WebSocket ticket issuance, ticket consumption, per-event authentication, and periodic
+idle revalidation all use the shared account eligibility. A deactivated socket cannot
+receive another event; idle sockets close on the next existing check (within 30
+seconds). Pending applicants cannot keep a notification socket open while waiting.
+Their approval notification persists and is visible after approval and their first
+successful login. A user with another active membership can receive approval for an
+additional ministry over an existing eligible socket.
+
+#### Existing global administrators and bootstrap
+
+There is **no global ADMIN authentication bypass**. Effective global ADMIN permission
+already requires an ACTIVE/nondeleted user, membership, ministry, role, and unrevoked
+assignment; those existing administrators satisfy the new login requirement. Existing
+last-effective-admin locks/409 protection remain in force when changing memberships.
+An operator bootstrapping or repairing the first administrator must manually provision
+an ACTIVE account, ACTIVE membership in an available ministry, and active GLOBAL ADMIN
+role assignment together through reviewed database maintenance. Public registration
+never grants these privileges, and account suspension/deletion is never overridden.
+The legacy database/ORM user-status default remains unchanged for compatibility with
+manual bootstrap; public registration explicitly supplies PENDING. An ACTIVE default
+alone grants no application access without an eligible membership.
+
+#### PostgreSQL deployment and existing data
+
+The prior `user_status` enum only contains ACTIVE/INACTIVE. Review and apply
+`migrations/002_add_pending_user_status.sql` **before deploying this code**. It adds
+PENDING and commits the enum extension; it does not alter existing account rows,
+passwords, role assignments, notifications, or defaults. No application startup code
+executes it. Use PostgreSQL psql connection settings, not a SQLAlchemy driver URI:
+
+```bash
+psql -v ON_ERROR_STOP=1 -f migrations/002_add_pending_user_status.sql
+```
+
+`migrations/003_review_membership_account_status.sql` is an OPTIONAL operator review,
+not an automatic data migration. It lists ACTIVE/nondeleted users without eligible
+active memberships, previews changing only those accounts to PENDING, and ends in
+ROLLBACK. Review affected IDs and administrator bootstrap first; only an explicitly
+approved maintenance run should replace ROLLBACK with COMMIT. Run during a write-quiesced
+maintenance window because the preview takes table locks for a consistent result.
+Suspended/deleted users and effective global admins are not changed by the preview.
+No production account data or historical notification text is modified by this task.
+
+#### Spanish notification copy
+
+Only newly generated titles/messages are Spanish. Type identifiers, JSON field names,
+resource types/IDs, and the `notification.created` envelope remain unchanged:
+
+| Type | Title | Message |
+| --- | --- | --- |
+| REHEARSAL_ASSIGNED | Nuevo ensayo asignado | Se te ha asignado el ensayo "{name}". |
+| REHEARSAL_UPDATED | Ensayo actualizado | Los detalles de tu ensayo "{name}" han cambiado. |
+| REHEARSAL_CANCELLED | Ensayo cancelado | Tu ensayo "{name}" ha sido cancelado. |
+| MEMBERSHIP_PENDING | Nueva solicitud de ingreso | Un nuevo usuario ha solicitado ingresar a tu ministerio. |
+| MEMBERSHIP_APPROVED | Solicitud de ingreso aprobada | Tu solicitud de ingreso al ministerio ha sido aprobada. |
+
+Historical notifications remain stored and returned in their original language;
+there is no read-time translation or backfill. API errors/logs are not translated.
+
+Run `.venv/bin/python -m unittest discover -s tests -p test_account_activation.py` for
+activation, suspension, session, Spanish-copy, and rollback tests. The optional
+`ACCOUNT_ACTIVATION_TEST_DATABASE_URL` test uses an isolated scratch PostgreSQL schema
+to validate the enum extension, approval/deactivation, and rollback-only reconciliation
+script; it never falls back to the production DATABASE_URL.

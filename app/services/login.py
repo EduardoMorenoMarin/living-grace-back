@@ -2,6 +2,7 @@ from app.repositories.user import UserRepository
 from app.schemas.auth import LoginRequest, TokenResponse
 from app.services.password_hasher import PasswordHasher
 from app.services.token import TokenService
+from app.models.enums import UserStatus
 
 
 class InvalidCredentials(Exception):
@@ -23,7 +24,7 @@ class LoginService:
 
     def login(self, data: LoginRequest) -> TokenResponse:
         user = self.repository.get_by_identifier(data.identifier)
-        if user is None or not self.password_hasher.verify(
+        if user is None or user.status != UserStatus.ACTIVE or user.deleted_at is not None or not self.password_hasher.verify(
             data.password.get_secret_value(), user.password_hash
         ):
             raise InvalidCredentials("Invalid credentials.")
