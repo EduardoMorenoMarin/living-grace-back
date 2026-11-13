@@ -11,6 +11,7 @@ from app.core.exceptions import RegistrationConflict, RegistrationPersistenceErr
 from app.core.exceptions import PasswordChangePersistenceError
 from app.core.database import engine
 from app.models.user import User
+from app.repositories.account_eligibility import eligible_account_conditions
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ class UserRepository:
     def get_by_identifier(self, identifier: str) -> User | None:
         """Fetch a user by their email address."""
         return self.db.scalar(
-            select(User).where(User.email == identifier)
+            select(User).where(User.email == identifier, *eligible_account_conditions())
         )
 
     def get_for_password_change(self, user_id: int) -> User | None:

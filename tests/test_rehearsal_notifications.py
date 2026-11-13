@@ -57,7 +57,7 @@ class RehearsalAssignmentNotificationTests(unittest.TestCase):
         notification = rows[0]
         self.assertEqual(notification.user_id, 102)
         self.assertEqual(notification.type, "REHEARSAL_ASSIGNED")
-        self.assertEqual(notification.title, "New rehearsal assignment")
+        self.assertEqual(notification.title, "Nuevo ensayo asignado")
         self.assertIn("Sunday worship practice", notification.message)
         self.assertEqual(notification.resource_type, "rehearsal")
         self.assertEqual(notification.resource_id, rehearsal_id)
@@ -177,7 +177,7 @@ class RehearsalAssignmentNotificationTests(unittest.TestCase):
             event = user_socket.receive_json()
             self.assertEqual(event["type"], "notification.created")
             self.assertEqual(event["data"]["notification_type"], "REHEARSAL_ASSIGNED")
-            self.assertEqual(event["data"]["title"], "New rehearsal assignment")
+            self.assertEqual(event["data"]["title"], "Nuevo ensayo asignado")
             self.assertEqual(event["data"]["resource_id"], first.json()["id"])
             self.assertFalse(event["data"]["is_read"])
             second = self.create(ministry_member_ids=[206])

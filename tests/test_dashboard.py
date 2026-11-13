@@ -380,7 +380,7 @@ class DashboardTests(unittest.TestCase):
             with self.subTest(model=model, key=key):
                 previous = getattr(self.db.get(model, identifier), key)
                 self.change(model, identifier, **{key: value})
-                self.assertEqual(self.dashboard().status_code, 403)
+                self.assertEqual(self.dashboard().status_code, 401 if model is User else 403)
                 self.change(model, identifier, **{key: previous})
         self.login(104)
         self.assertEqual(self.dashboard().status_code, 403)

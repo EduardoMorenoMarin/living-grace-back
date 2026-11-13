@@ -186,7 +186,7 @@ class AttendanceCheckInTests(unittest.TestCase):
         ):
             previous = getattr(self.db.get(model, identifier), field)
             self.change(model, identifier, **{field: value})
-            self.assertEqual(self.check_in().status_code, 403)
+            self.assertEqual(self.check_in().status_code, 401 if model is User else 403)
             self.change(model, identifier, **{field: previous})
         self.change(MinistryMember, 206, ministry_id=12)
         self.assertEqual(self.check_in().status_code, 403)

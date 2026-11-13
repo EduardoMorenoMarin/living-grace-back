@@ -49,7 +49,7 @@ class RegistrationTests(unittest.TestCase):
             self.created.append(user)
             # Simulate server defaults returned by a successful flush.
             user.id = 123
-            user.status = "ACTIVE"
+            user.status = user.status or "PENDING"
             user.created_at = user.updated_at = datetime.now(timezone.utc)
             user.deleted_at = None
 
@@ -73,7 +73,7 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(body["email"], self.payload["email"])
         self.assertEqual(body["birth_date"], "2000-01-02")
         self.assertEqual(body["phone"], self.payload["phone"])
-        self.assertEqual(body["status"], "ACTIVE")
+        self.assertEqual(body["status"], "PENDING")
         self.assertNotIn("password", body)
         self.assertNotIn("password_hash", body)
         self.assertNotIn("username", body)
@@ -229,7 +229,7 @@ class PostgreSQLRegistrationTests(unittest.TestCase):
         self.assertNotIn("password", body)
         self.assertNotIn("password_hash", body)
         self.assertNotIn("username", body)
-        self.assertEqual(body["status"], "ACTIVE")
+        self.assertEqual(body["status"], "PENDING")
         self.assertIsNone(body["phone"])
         self.assertIsNone(body["birth_date"])
         self.assertIsNone(body["deleted_at"])

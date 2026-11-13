@@ -62,7 +62,7 @@ class ProfileTests(unittest.TestCase):
         self.stack.enter_context(patch.dict(app.dependency_overrides, {get_db: override_db}))
         self.client = self.stack.enter_context(TestClient(app))
 
-    def membership(self, name, functions, user_id=None, status=MembershipStatus.PENDING):
+    def membership(self, name, functions, user_id=None, status=MembershipStatus.ACTIVE):
         ministry = Ministry(name=name, status=MinistryStatus.ACTIVE)
         self.db.add(ministry)
         self.db.flush()
@@ -81,6 +81,7 @@ class ProfileTests(unittest.TestCase):
         return self.client.get("/users/me", headers=self.headers, **kwargs)
 
     def test_authenticated_profile_and_sensitive_fields(self):
+        self.membership("Access ministry", [])
         response = self.get()
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
@@ -95,6 +96,7 @@ class ProfileTests(unittest.TestCase):
             self.assertNotIn(secret, response.text)
 
     def test_existing_user_email_login_and_token_authenticate_profile(self):
+        self.membership("Access ministry", [])
         password = "Existing-account-password-123!"
         self.user.password_hash = PasswordHasher().hash(password)
         self.db.commit()
@@ -146,10 +148,11 @@ class ProfileTests(unittest.TestCase):
         self.assign_role(member, name="USER")
         self.assert_admin_status(False)
 
-    def test_no_memberships_is_not_admin(self):
-        self.assert_admin_status(False)
+    def test_no_memberships_cannot_access_profile(self):
+        self.assertEqual(self.get().status_code, 401)
 
     def test_invalid_admin_assignments_match_authorization(self):
+        self.membership("Regular access", [])
         member = self.membership("Admin ministry", [], status=MembershipStatus.ACTIVE)
         role, assignment = self.assign_role(member)
         ministry = self.db.get(Ministry, member.ministry_id)
@@ -185,6 +188,7 @@ class ProfileTests(unittest.TestCase):
         self.assert_admin_status(True)
 
     def test_other_users_admin_assignment_does_not_grant_admin(self):
+        self.membership("Access ministry", [])
         member = self.membership("Other admin", [], user_id=self.other.id, status=MembershipStatus.ACTIVE)
         self.assign_role(member)
         self.assert_admin_status(False)
@@ -225,13 +229,14 @@ class ProfileTests(unittest.TestCase):
         ])
 
     def test_no_memberships(self):
-        self.assertEqual(self.get().json()["memberships"], [])
+        self.assertEqual(self.get().status_code, 401)
 
     def test_membership_without_functions(self):
         self.membership("Hospitality", [])
         self.assertEqual(self.get().json()["memberships"], [{"ministry": "Hospitality", "functions": []}])
 
     def test_missing_optional_fields(self):
+        self.membership("Access ministry", [])
         self.user.phone = None
         self.user.birth_date = None
         self.db.commit()
@@ -252,11 +257,12 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(self.get().status_code, 401)
 
     def test_other_users_data_cannot_be_requested(self):
+        self.membership("Access ministry", [])
         self.membership("Private ministry", ["Private function"], user_id=self.other.id)
         response = self.get(params={"user_id": self.other.id})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["email"], self.user.email)
-        self.assertEqual(response.json()["memberships"], [])
+        self.assertEqual(response.json()["memberships"], [{"ministry": "Access ministry", "functions": []}])
 
     def test_cross_ministry_function_is_excluded(self):
         member = self.membership("Alabanza", ["Teclado"])
@@ -267,6 +273,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(self.get().json()["memberships"], [{"ministry": "Alabanza", "functions": ["Teclado"]}])
 
     def test_unavailable_ministries_and_memberships_are_excluded(self):
+        self.membership("Access ministry", [])
         for target, attribute, value in (
             ("member", "deleted_at", datetime.now(timezone.utc)),
             ("member", "status", MembershipStatus.INACTIVE),
@@ -277,7 +284,7 @@ class ProfileTests(unittest.TestCase):
             entity = member if target == "member" else self.db.get(Ministry, member.ministry_id)
             setattr(entity, attribute, value)
         self.db.commit()
-        self.assertEqual(self.get().json()["memberships"], [])
+        self.assertEqual(self.get().json()["memberships"], [{"ministry": "Access ministry", "functions": []}])
 
     def test_unavailable_functions_preserve_empty_ministry(self):
         member = self.membership("Alabanza", ["Deleted", "Inactive", "Revoked"])
@@ -307,8 +314,13 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(len(statements), 2)
 
     def test_profile_database_failure_is_safe(self):
-        with patch.object(self.db, "execute", side_effect=SQLAlchemyError("private database details")):
-            # Keep authentication's lookup in the identity map; fail the profile read.
+        self.membership("Access ministry", [])
+        execute = self.db.execute
+        def fail_profile(statement, *args, **kwargs):
+            if "functions" in str(statement):
+                raise SQLAlchemyError("private database details")
+            return execute(statement, *args, **kwargs)
+        with patch.object(self.db, "execute", side_effect=fail_profile):
             response = self.get()
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json(), {"detail": "Unable to retrieve profile."})

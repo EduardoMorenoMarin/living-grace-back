@@ -295,8 +295,8 @@ class RehearsalReadTests(unittest.TestCase):
         for field, value in (("status", UserStatus.INACTIVE), ("deleted_at", datetime.now(timezone.utc))):
             original = getattr(self.db.get(User, 101), field)
             self.change(User, 101, **{field: value})
-            self.assertEqual(self.get().status_code, 403)
-            self.assertEqual(self.get(301).status_code, 403)
+            self.assertEqual(self.get().status_code, 401)
+            self.assertEqual(self.get(301).status_code, 401)
             self.change(User, 101, **{field: original})
 
     def test_inactive_deleted_ministries_excluded_for_both_roles(self):

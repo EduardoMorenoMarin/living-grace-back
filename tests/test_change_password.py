@@ -130,7 +130,7 @@ class ChangePasswordTests(unittest.TestCase):
             self.assert_original_password()
 
     def test_authentication_database_failure_is_no_store(self):
-        with patch.object(self.db, "get", side_effect=SQLAlchemyError("private")):
+        with patch.object(self.db, "execute", side_effect=SQLAlchemyError("private")):
             self.assert_sensitive_response(self.post(), 500)
         self.assert_original_password()
 
