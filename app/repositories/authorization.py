@@ -7,6 +7,7 @@ from app.models.ministry_member import MinistryMember
 from app.models.ministry_member_role import MinistryMemberRole
 from app.models.role import Role
 from app.models.user import User
+from app.repositories.account_eligibility import active_membership_conditions, active_ministry_conditions
 
 
 class AuthorizationRepository:
@@ -34,6 +35,15 @@ class AuthorizationRepository:
         return self._global_roles(None).with_only_columns(MinistryMember.user_id).where(
             Role.name == "ADMIN",
         ).distinct().correlate(None)
+
+    @staticmethod
+    def managed_ministries(user_id: int):
+        """Ministry scope for a caller already authorized as a global administrator."""
+        membership = select(MinistryMember.id).where(
+            MinistryMember.user_id == user_id, MinistryMember.ministry_id == Ministry.id,
+            *active_membership_conditions(),
+        ).correlate(Ministry).exists()
+        return select(Ministry.id).where(*active_ministry_conditions(), membership)
 
     def _global_roles(self, user_id: int | None):
         return (

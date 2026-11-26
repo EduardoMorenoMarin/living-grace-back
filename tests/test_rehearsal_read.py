@@ -51,6 +51,9 @@ class RehearsalReadFixture(unittest.TestCase):
 
         metadata = MetaData()
         for table in Base.metadata.sorted_tables:
+            # These tables use PostgreSQL constraints and have their own fixtures.
+            if table.name in {"songs", "rehearsal_songs", "equipment", "equipment_loans"}:
+                continue
             copy = table.to_metadata(metadata)
             for column in copy.columns:
                 if isinstance(column.type, BigInteger):

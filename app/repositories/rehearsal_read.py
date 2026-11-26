@@ -43,6 +43,11 @@ class RehearsalReadRepository:
             membership.correlate(Rehearsal).exists(),
         )
 
+    def visible_id(self, user_id: int, is_admin: bool, rehearsal_id: int):
+        return select(Rehearsal.id).join(Ministry, Ministry.id == Rehearsal.ministry_id).where(
+            Rehearsal.id == rehearsal_id, self._visibility(user_id, is_admin),
+        )
+
     def _metadata(self):
         return select(
             Rehearsal.id, Rehearsal.name, Rehearsal.description,

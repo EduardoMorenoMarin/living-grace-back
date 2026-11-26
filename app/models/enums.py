@@ -39,3 +39,16 @@ class AttendanceStatus(str, Enum):
     ABSENT = "ABSENT"
     # Legacy read compatibility only; new attendance writes must not use this value.
     JUSTIFIED = "JUSTIFIED"
+
+
+class EquipmentStatus(str, Enum):
+    AVAILABLE = "AVAILABLE"
+    BORROWED = "BORROWED"
+    MAINTENANCE = "MAINTENANCE"
+    RETIRED = "RETIRED"
+
+
+class EquipmentCondition(str, Enum):
+    GOOD = "GOOD"
+    FAIR = "FAIR"
+    DAMAGED = "DAMAGED"

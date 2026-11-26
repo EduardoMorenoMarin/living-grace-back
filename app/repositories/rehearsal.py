@@ -10,8 +10,7 @@ from app.core.exceptions import RehearsalPersistenceError
 from app.models.rehearsal import Rehearsal
 from app.models.rehearsal_attendance import RehearsalAttendance
 from app.models.ministry_member import MinistryMember
-from app.models.user import User
-from app.models.enums import MembershipStatus, UserStatus
+from app.repositories.account_eligibility import eligible_ministry_member_ids
 
 
 class RehearsalRepository:
@@ -25,14 +24,8 @@ class RehearsalRepository:
 
     def eligible_participant_ids(self, ministry_id: int, member_ids: list[int]) -> set[int]:
         return set(self.db.scalars(
-            select(MinistryMember.id)
-            .join(User, User.id == MinistryMember.user_id)
-            .where(
-                MinistryMember.id.in_(member_ids), MinistryMember.ministry_id == ministry_id,
-                MinistryMember.status == MembershipStatus.ACTIVE,
-                MinistryMember.deleted_at.is_(None),
-                User.status == UserStatus.ACTIVE, User.deleted_at.is_(None),
-            ).with_for_update(read=True)
+            eligible_ministry_member_ids(ministry_id)
+            .where(MinistryMember.id.in_(member_ids)).with_for_update(read=True)
         ))
 
     def add_attendance(self, rehearsal_id: int, member_ids: list[int]) -> None:
