@@ -1,9 +1,11 @@
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.exceptions import RehearsalNotFound, RehearsalReadError
 from app.repositories.rehearsal_read import RehearsalReadRepository, utc_now
+from app.schemas.calendar import CalendarRehearsal
 from app.schemas.rehearsal_read import (
     AdminRehearsalDetail, AdminRehearsalItem, AdminRehearsalPage,
     MemberRehearsalDetail, MemberRehearsalItem, MyRehearsalAttendance, RehearsalPage, RehearsalParticipant,
@@ -46,6 +48,22 @@ class RehearsalReadService:
         return RehearsalPage(items=[MemberRehearsalItem(
             **self._metadata(row), **self._attendance(row),
         ) for row in rows], total=total)
+
+    def list_calendar(
+        self, viewer: RehearsalViewer, start: datetime | None, end: datetime | None,
+    ) -> list[CalendarRehearsal]:
+        try:
+            rows = self.repository.list_upcoming_visible(viewer.user_id, viewer.is_admin, utc_now(), start, end)
+        except SQLAlchemyError:
+            raise RehearsalReadError from None
+        entries = []
+        for row in rows:
+            entry = dict(row)
+            for field in ("start", "end"):
+                if entry[field].tzinfo is None:
+                    entry[field] = entry[field].replace(tzinfo=timezone.utc)
+            entries.append(CalendarRehearsal(**entry))
+        return entries
 
     @staticmethod
     def _attendance(row) -> dict:
