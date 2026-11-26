@@ -43,6 +43,11 @@ class RehearsalReadRepository:
             membership.correlate(Rehearsal).exists(),
         )
 
+    def visible_id(self, user_id: int, is_admin: bool, rehearsal_id: int):
+        return select(Rehearsal.id).join(Ministry, Ministry.id == Rehearsal.ministry_id).where(
+            Rehearsal.id == rehearsal_id, self._visibility(user_id, is_admin),
+        )
+
     def _metadata(self):
         return select(
             Rehearsal.id, Rehearsal.name, Rehearsal.description,
@@ -89,6 +94,22 @@ class RehearsalReadRepository:
         return self.db.execute(statement.where(
             Rehearsal.id == rehearsal_id, self._visibility(user_id, is_admin),
         )).mappings().one_or_none()
+
+    def list_upcoming_visible(
+        self, user_id: int, is_admin: bool, now: datetime, start: datetime | None, end: datetime | None,
+    ) -> Sequence[RowMapping]:
+        statement = select(
+            Rehearsal.id, Rehearsal.name.label("title"),
+            Ministry.id.label("ministry_id"), Ministry.name.label("ministry_name"),
+            Rehearsal.start_at.label("start"), Rehearsal.end_at.label("end"),
+        ).join(Ministry, Ministry.id == Rehearsal.ministry_id).where(
+            self._visibility(user_id, is_admin), Rehearsal.start_at >= now,
+        )
+        if start is not None:
+            statement = statement.where(Rehearsal.end_at > start)
+        if end is not None:
+            statement = statement.where(Rehearsal.start_at < end)
+        return self.db.execute(statement.order_by(Rehearsal.start_at, Rehearsal.id)).mappings().all()
 
     def get_admin_for_update(self, user_id: int, rehearsal_id: int) -> Rehearsal | None:
         return self.db.scalar(

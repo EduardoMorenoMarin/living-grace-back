@@ -7,6 +7,9 @@ from app.api.routes.auth import router as auth_router
 from app.api.routes.users import router as users_router
 from app.api.routes.ministries import router as ministries_router
 from app.api.routes.rehearsals import router as rehearsals_router
+from app.api.routes.equipment import router as equipment_router
+from app.api.routes.songs import rehearsal_router as rehearsal_songs_router, router as songs_router
+from app.api.routes.calendar import router as calendar_router
 from app.api.routes.attendance import router as attendance_router
 from app.api.routes.dashboard import router as dashboard_router
 from app.api.routes.notifications import router as notifications_router
@@ -18,13 +21,17 @@ app = FastAPI(title="Living Grace API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.FRONTEND_ORIGIN],
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
     allow_headers=["Content-Type", "Authorization"],
 )
 app.include_router(users_router)
 app.include_router(auth_router)
 app.include_router(ministries_router)
 app.include_router(rehearsals_router)
+app.include_router(equipment_router)
+app.include_router(songs_router)
+app.include_router(rehearsal_songs_router)
+app.include_router(calendar_router)
 app.include_router(attendance_router)
 app.include_router(dashboard_router)
 app.include_router(notifications_router)

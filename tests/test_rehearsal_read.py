@@ -29,6 +29,7 @@ from app.models import (
 from app.models.enums import AttendanceStatus, FunctionStatus, MembershipStatus, MinistryStatus, RoleScope, RoleStatus, UserStatus
 from app.repositories.authorization import AuthorizationRepository
 from app.repositories.rehearsal_read import RehearsalReadRepository
+from app.schemas.calendar import CalendarRehearsal
 from app.schemas.rehearsal_read import MemberRehearsalDetail
 from app.services.rehearsal_read import RehearsalReadService, RehearsalViewer
 from app.services.token import TokenService
@@ -37,7 +38,7 @@ from app.services.token import TokenService
 COMMON = {"id", "ministry", "name", "description", "start_at", "end_at", "tolerance_minutes", "created_at", "updated_at", "created_by"}
 
 
-class RehearsalReadTests(unittest.TestCase):
+class RehearsalReadFixture(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
@@ -50,6 +51,9 @@ class RehearsalReadTests(unittest.TestCase):
 
         metadata = MetaData()
         for table in Base.metadata.sorted_tables:
+            # These tables use PostgreSQL constraints and have their own fixtures.
+            if table.name in {"songs", "rehearsal_songs", "equipment", "equipment_loans"}:
+                continue
             copy = table.to_metadata(metadata)
             for column in copy.columns:
                 if isinstance(column.type, BigInteger):
@@ -131,6 +135,8 @@ class RehearsalReadTests(unittest.TestCase):
             setattr(entity, key, value)
         self.db.commit()
 
+
+class RehearsalReadTests(RehearsalReadFixture):
     def test_admin_multiple_ministries_other_creator_and_counts(self):
         response = self.get()
         self.assertEqual(response.status_code, 200, response.text)
@@ -428,3 +434,142 @@ class RehearsalReadTests(unittest.TestCase):
         self.assertEqual(result.start_at.utcoffset(), timedelta(hours=-5))
         self.assertIn("-05:00", result.model_dump_json())
         repository.get_participants.assert_not_called()
+
+
+class CalendarRehearsalTests(RehearsalReadFixture):
+    path = "/calendar/rehearsals"
+    now = datetime(2026, 10, 24, tzinfo=timezone.utc)
+
+    def setUp(self):
+        super().setUp()
+        self.stack.enter_context(patch("app.services.rehearsal_read.utc_now", return_value=self.now))
+        self.stack.enter_context(patch.object(settings, "APP_TIMEZONE", "America/Lima"))
+
+    def calendar(self, **params):
+        return self.client.get(self.path, headers=self.headers, params=params)
+
+    def calendar_ids(self, **params):
+        response = self.calendar(**params)
+        self.assertEqual(response.status_code, 200, response.text)
+        return [item["id"] for item in response.json()]
+
+    def test_role_scope_ordering_and_response_schema(self):
+        self.assertEqual(self.calendar_ids(), [301, 302, 303, 305])
+        self.login(103)
+        self.assertEqual(self.calendar_ids(), [301, 303, 305])
+        self.login(102)
+        self.assertEqual(self.calendar_ids(user_id=101, role="ADMIN", ministry_id=13), [301, 302])
+        item = self.calendar().json()[0]
+        self.assertEqual(item, {
+            "id": 301, "title": "Rehearsal 301", "ministry_id": 11, "ministry_name": "Ministry 11",
+            "start": "2026-10-25T18:00:00Z", "end": "2026-10-25T20:00:00Z",
+        })
+        self.assertEqual(CalendarRehearsal.model_validate(item).start.utcoffset(), timedelta(0))
+
+    def test_authentication_and_account_restrictions(self):
+        for headers in ({}, {"Authorization": "Bearer invalid"}):
+            response = self.client.get(self.path, headers=headers)
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(response.headers["WWW-Authenticate"], "Bearer")
+        for field, invalid, valid, status in (
+            ("status", UserStatus.INACTIVE, UserStatus.ACTIVE, 401),
+            ("deleted_at", self.now, None, 401),
+            ("must_change_password", True, False, 403),
+        ):
+            with self.subTest(field=field):
+                self.change(User, 101, **{field: invalid})
+                self.assertEqual(self.calendar().status_code, status)
+                self.change(User, 101, **{field: valid})
+        self.login(104)
+        self.assertEqual(self.calendar().status_code, 403)
+        self.login(102)
+        self.change(MinistryMemberRole, 503, revoked_at=self.now)
+        self.assertEqual(self.calendar().status_code, 403)
+
+    def test_membership_and_ministry_restrictions_for_both_roles(self):
+        for actor, membership, expected in ((101, 202, [301, 303, 305]), (102, 204, [301])):
+            self.login(actor)
+            for field, restricted, restored in (
+                ("status", MembershipStatus.PENDING, MembershipStatus.ACTIVE),
+                ("status", MembershipStatus.INACTIVE, MembershipStatus.ACTIVE),
+                ("deleted_at", self.now, None),
+            ):
+                with self.subTest(actor=actor, field=field, restricted=restricted):
+                    self.change(MinistryMember, membership, **{field: restricted})
+                    self.assertEqual(self.calendar_ids(), expected)
+                    self.change(MinistryMember, membership, **{field: restored})
+            self.change(Ministry, 12, status=MinistryStatus.INACTIVE)
+            self.assertEqual(self.calendar_ids(), expected)
+            self.change(Ministry, 12, status=MinistryStatus.ACTIVE)
+        self.change(MinistryMember, 203, status=MembershipStatus.INACTIVE)
+        self.change(MinistryMember, 204, deleted_at=self.now)
+        self.assertEqual(self.calendar().status_code, 401)
+
+    def test_overlap_uses_local_midnight_and_excludes_touching_boundaries(self):
+        lower = datetime(2026, 10, 26, 5, tzinfo=timezone.utc)
+        upper = lower + timedelta(days=1)
+        for identifier, start, end in (
+            (301, lower - timedelta(hours=2), lower),
+            (302, lower - timedelta(hours=1), upper + timedelta(hours=1)),
+            (303, upper - timedelta(minutes=1), upper + timedelta(hours=1)),
+            (305, upper, upper + timedelta(hours=1)),
+        ):
+            self.change(Rehearsal, identifier, start_at=start, end_at=end)
+        self.assertEqual(self.calendar_ids(start="2026-10-26", end="2026-10-27"), [302, 303])
+        self.assertEqual(self.calendar_ids(start="2026-10-26"), [302, 303, 305])
+        self.assertEqual(self.calendar_ids(end="2026-10-27"), [301, 302, 303])
+        self.login(102)
+        self.assertEqual(self.calendar_ids(start="2026-10-26", end="2026-10-27"), [302])
+
+    def test_upcoming_and_empty_results(self):
+        self.change(Rehearsal, 301, start_at=self.now - timedelta(hours=3), end_at=self.now - timedelta(hours=1))
+        self.change(Rehearsal, 302, start_at=self.now - timedelta(hours=1), end_at=self.now + timedelta(hours=1))
+        self.change(Rehearsal, 305, start_at=self.now, end_at=self.now + timedelta(hours=1))
+        self.assertEqual(self.calendar_ids(), [305, 303])
+        self.assertEqual(self.calendar_ids(start="2026-10-23", end="2026-10-25"), [305])
+        response = self.calendar(start="2026-11-01")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
+        self.login(102)
+        self.assertEqual(self.calendar_ids(), [])
+
+    def test_invalid_dates_and_ranges(self):
+        for params in (
+            {"start": "bad"}, {"end": "2026-02-29"}, {"start": "2026-10-26T00:00:00Z"},
+            {"start": "1760000000"}, {"start": "2026-10-27", "end": "2026-10-26"},
+            {"start": "2026-10-26", "end": "2026-10-26"},
+        ):
+            with self.subTest(params=params):
+                response = self.calendar(**params)
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(response.json()["detail"][0]["loc"][0], "query")
+
+    def test_calendar_query_is_read_only_and_openapi_describes_contract(self):
+        statements = []
+
+        def capture(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        event.listen(self.engine, "before_cursor_execute", capture)
+        self.addCleanup(event.remove, self.engine, "before_cursor_execute", capture)
+        self.assertEqual(self.calendar_ids(), [301, 302, 303, 305])
+        self.assertEqual(len(statements), 3)
+        self.assertTrue(all(statement.lstrip().upper().startswith("SELECT") for statement in statements))
+        self.assertEqual(self.client.post(self.path, headers=self.headers).status_code, 405)
+        operations = self.client.get("/openapi.json").json()["paths"][self.path]
+        self.assertEqual(set(operations), {"get"})
+        operation = operations["get"]
+        self.assertEqual(operation["security"], [{"HTTPBearer": []}])
+        self.assertEqual({parameter["name"] for parameter in operation["parameters"]}, {"start", "end"})
+        for parameter in operation["parameters"]:
+            self.assertFalse(parameter["required"])
+            self.assertIn({"type": "string", "format": "date"}, parameter["schema"]["anyOf"])
+        self.assertEqual(set(operation["responses"]), {"200", "401", "403", "422", "500"})
+        schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+        self.assertEqual(schema["items"]["$ref"], "#/components/schemas/CalendarRehearsal")
+
+    def test_database_errors_fail_closed(self):
+        with patch.object(RehearsalReadRepository, "list_upcoming_visible", side_effect=SQLAlchemyError("private")):
+            response = self.calendar()
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json(), {"detail": "Unable to retrieve calendar rehearsals."})

@@ -1573,3 +1573,191 @@ activation, suspension, session, Spanish-copy, and rollback tests. The optional
 `ACCOUNT_ACTIVATION_TEST_DATABASE_URL` test uses an isolated scratch PostgreSQL schema
 to validate the enum extension, approval/deactivation, and rollback-only reconciliation
 script; it never falls back to the production DATABASE_URL.
+
+## Songs and rehearsal setlists
+
+All nine endpoints require a bearer token from an eligible account. Swagger
+at `/docs` documents the bodies, responses, and errors.
+
+| Method and path | Success | Access |
+| --- | --- | --- |
+| `POST /songs` | `201` with the created song | Global ADMIN |
+| `GET /songs` | `200` with `{items, total}` | Global ADMIN |
+| `GET /songs/{song_id}` | `200` with a song | Global ADMIN |
+| `PATCH /songs/{song_id}` | `200` with the updated song | Global ADMIN |
+| `DELETE /songs/{song_id}` | `204` with an empty body | Global ADMIN |
+| `GET /rehearsals/{rehearsal_id}/songs` | `200` with the ordered array | Global ADMIN or selected global USER, with active membership in the rehearsal's active ministry |
+| `POST /rehearsals/{rehearsal_id}/songs` | `201` with the full ordered array | Global ADMIN with active membership in the rehearsal's active ministry |
+| `PUT /rehearsals/{rehearsal_id}/songs/order` | `200` with the full ordered array | Same as rehearsal assignment |
+| `DELETE /rehearsals/{rehearsal_id}/songs/{song_id}` | `204` with an empty body | Same as rehearsal assignment |
+
+The catalog lists active songs sorted by title, then ID. Use `limit` (default
+20, maximum 100), `offset` (default 0), and `search` for a case-insensitive
+substring of title or artist. The response's `total` counts matching active
+songs before pagination.
+
+An example `POST /songs` body follows.
+
+```json
+{"title":"Amazing Grace","artist":"John Newton","musical_key":"G","lyrics":null,"reference_url":null}
+```
+
+The catalog detail response includes server-managed audit fields.
+
+```json
+{
+  "id": 1,
+  "title": "Amazing Grace",
+  "artist": "John Newton",
+  "musical_key": "G",
+  "lyrics": null,
+  "reference_url": null,
+  "created_by": 42,
+  "created_at": "2026-11-25T15:00:00Z",
+  "updated_at": "2026-11-25T15:00:00Z"
+}
+```
+
+Send only fields to change in a patch, for example `{"musical_key":"A"}`.
+Use `null` to clear an optional field. Titles must contain a non-whitespace
+character. Reference URLs must use HTTP or HTTPS. The server records the
+authenticated creator or assigner.
+
+An example assignment request is
+`{"songs":[{"song_id":1,"position":1},{"song_id":2,"position":4}]}`.
+Positions must be positive and unique within the rehearsal. Assignment can
+leave gaps. To reorder, send all assigned IDs exactly once, for example
+`{"song_ids":[2,1]}`. Reorder and removal renumber positions from 1. A read of
+an empty setlist returns `[]`. A setlist with one assignment looks like this.
+
+```json
+[
+  {"song_id":1,"title":"Amazing Grace","artist":"John Newton","musical_key":"G","lyrics":null,"reference_url":null,"position":1}
+]
+```
+
+Missing or invalid credentials and ineligible accounts return `401`. Missing
+roles and mandatory password changes return `403`. Out-of-scope rehearsals,
+unavailable songs, and missing assignments return `404`. Conflicting
+assignments and deletion of an assigned song return `409`. Invalid fields and
+incomplete or otherwise invalid reorder requests return `422`. Persistence
+failures return `500`.
+
+### PostgreSQL deployment and tests
+
+The existing, manually provisioned `public.songs` and
+`public.rehearsal_songs` tables are the schema baseline for this feature. The
+application uses the existing PostgreSQL search path, which must resolve both
+tables in `public` along with the other application tables. The versioned SQL
+files under `migrations/` continue to cover their existing changes. There is
+no song migration to apply. New environments must have the baseline tables
+provisioned before using these endpoints.
+
+Assignment, removal, and reorder serialize on the rehearsal row. Assignment
+and catalog soft deletion also lock the relevant song rows under PostgreSQL's
+default READ COMMITTED isolation. The position constraint must be
+`DEFERRABLE INITIALLY IMMEDIATE` so a single update can swap positions.
+Deleting a rehearsal uses the database cascade to remove its setlist
+associations. Catalog songs are preserved.
+
+The song HTTP, constraint, and concurrency tests use disposable PostgreSQL
+schemas. Set `SONGS_TEST_DATABASE_URL` to a scratch PostgreSQL database that
+allows schema creation and run
+`python -m unittest discover -s tests -p test_songs.py`. OpenAPI and CORS tests
+also run without this variable. The test suite uses the explicitly supplied
+scratch URL for song fixtures.
+
+## Equipment inventory and loans
+
+All endpoints require an eligible bearer-authenticated account. Inventory and
+administrative loan operations require global `ADMIN` and are scoped to active
+ministries where the administrator has an active membership. Personal history
+is scoped to the authenticated user's ID. It includes former memberships while
+the account continues to meet the usual login and JWT eligibility rules.
+
+| Method and path | Success |
+| --- | --- |
+| `POST /equipment` | `201` with the registered item |
+| `GET /equipment` | `200` with `{items, total}` for non-deleted equipment |
+| `GET /equipment/{equipment_id}` | `200` with the item, ministry, and active loan or `null` |
+| `PATCH /equipment/{equipment_id}` | `200` with the updated item |
+| `DELETE /equipment/{equipment_id}` | `204` with an empty body |
+| `POST /equipment/{equipment_id}/loans` | `201` with the new loan |
+| `GET /equipment/{equipment_id}/loans` | `200` with the full item history, including retired and soft-deleted items |
+| `GET /equipment/loans` | `200` with `{items, total}` for scoped loans |
+| `PATCH /equipment/loans/{loan_id}/return` | `200` with the completed loan |
+| `GET /equipment/loans/me` | `200` with the caller's active and completed loans |
+
+The two paginated lists accept `limit` (default 20, maximum 100) and `offset`
+(default 0). Inventory is ordered by name and ID. It supports exact
+`ministry_id`, `status`, `condition`, and `category` filters and a
+case-insensitive literal `search` across name, brand, model, and serial
+number. Loan lists are ordered by borrowing time and ID, newest first.
+The administrative loan list accepts `ministry_id`, `equipment_id`,
+`ministry_member_id`, `active`, and `overdue`. Personal history accepts
+`active`. An overdue loan is open and has an expected return time earlier
+than the server time.
+
+Example equipment registration body:
+
+```json
+{"ministry_id":11,"name":"Acoustic Guitar","category":"Instruments","brand":"Yamaha","model":"F310","condition":"GOOD"}
+```
+
+Good or fair items start as `AVAILABLE`. Damaged items start in `MAINTENANCE`.
+A condition-only patch to `DAMAGED` moves an available item into maintenance.
+To release a repaired item, send `{"condition":"GOOD","status":"AVAILABLE"}`.
+Loan operations manage `BORROWED` status. An active loan blocks manual status
+or condition changes and deletion. Retirement is terminal.
+
+Example loan and return bodies:
+
+```json
+{"ministry_member_id":15,"expected_return_at":"2027-01-15T18:00:00Z","notes":"For rehearsals"}
+```
+
+```json
+{"condition_at_return":"DAMAGED","return_notes":"Broken tuning peg"}
+```
+
+A return updates the item to `MAINTENANCE` for damage and `AVAILABLE` for
+good or fair condition. Audit IDs and borrowing and return timestamps are set
+by the server. Example personal history entry:
+
+```json
+{
+  "id": 28,
+  "equipment": {"id": 9, "name": "Acoustic Guitar", "category": "Instruments", "brand": "Yamaha", "model": "F310"},
+  "ministry": {"id": 11, "name": "Worship"},
+  "borrowed_at": "2027-01-10T18:00:00Z",
+  "expected_return_at": "2027-01-15T18:00:00Z",
+  "returned_at": "2027-01-14T18:00:00Z",
+  "condition_at_loan": "GOOD",
+  "condition_at_return": "DAMAGED",
+  "overdue": false
+}
+```
+
+The administrative loan response also includes borrower name and membership
+ID, staff audit IDs, and notes. Swagger at `/docs` documents all schemas and
+filters. Unauthenticated or ineligible callers receive `401`. Missing roles
+or a required password change yield `403`. Missing or out-of-scope
+resources yield `404`. State conflicts such as duplicate loans, duplicate
+returns, and invalid transitions yield `409`. Invalid input yields `422`.
+
+### Equipment PostgreSQL baseline and tests
+
+The existing `public.equipment`, `public.equipment_loans`,
+`public.equipment_status`, and `public.equipment_condition`, including the
+partial unique index `uq_equipment_active_loan`, are the baseline. The ORM
+uses the application's PostgreSQL search path and maps the ENUMs with
+`create_type=False`. There is no equipment migration to run. Provision the
+baseline separately for any new environment before enabling the endpoints.
+The application performs loan creation and returns in transactions, taking
+the equipment row lock before loan or borrower locks.
+
+To exercise the equipment contracts and concurrency with PostgreSQL, set
+`EQUIPMENT_TEST_DATABASE_URL` to a disposable database with permission to
+create schemas and run `python -m unittest discover -s tests -p test_equipment.py`.
+The test suite creates and removes unique scratch schemas. OpenAPI and
+unauthenticated route checks also run without this setting.

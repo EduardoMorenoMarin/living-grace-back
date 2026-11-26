@@ -104,3 +104,35 @@ class NotificationNotFound(Exception):
 
 class NotificationPersistenceError(Exception):
     pass
+
+
+class SongNotFound(Exception):
+    pass
+
+
+class SongConflict(Exception):
+    pass
+
+
+class SongOrderInvalid(Exception):
+    pass
+
+
+class SongPersistenceError(Exception):
+    pass
+
+
+class EquipmentNotFound(Exception):
+    pass
+
+
+class EquipmentConflict(Exception):
+    pass
+
+
+class EquipmentValidationError(Exception):
+    pass
+
+
+class EquipmentPersistenceError(Exception):
+    pass
